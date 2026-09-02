@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Methodology_4 — data-flow graph</title><style>html,body{margin:0;background:#f6f7f9}</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+</head><body><div id="root"></div><script>
+const { useState, useRef, useLayoutEffect, createContext, useContext, useEffect } = React;
+// Methodology_4 — editable data-flow graph.
+// English title + code identifier per node. Click a bubble to fan out
+// its components; click a component for a plain-English concept note.
+// Every text field is click-to-edit (edits saved locally).
+
+const ACCENT = {
+  in: "#4b83e6",
+  eng: "#17b3a3",
+  val: "#e08a2e",
+  disc: "#b45ce0"
+};
+const ink = "#1a1d24";
+const KEY = "mm_overrides_v3";
+const COLUMNS = [{
+  key: "in",
+  title: "Inputs & Data",
+  accent: ACCENT.in,
+  nodes: [{
+    id: "demand",
+    title: "Electricity Demand",
+    code: "Demand.py",
+    note: "Demand scenarios in GWh: a base level plus four DFES pathways.",
+    children: [{
+      title: "Base + DFES trajectories",
+      code: "base · Demand_EE/HE/FB/HT",
+      to: "sys",
+      d: "2019 demand plus the four DFES pathways.",
+      concept: "DFES = Distribution Future Energy Scenarios: National Grid's set of plausible futures for how much electricity a region draws. Four divergent paths bracket the uncertainty instead of betting on one forecast. Ofgem flagged a circularity — these scenarios already assume the cable exists."
+    }]
+  }, {
+    id: "cf",
+    title: "Capacity-Factor Profiles",
+    code: "Extra_Code/CF/",
+    note: "Hourly output-fraction profiles (Renewables.ninja, quantile-mapped to Kirkwall).",
+    children: [{
+      title: "Wind capacity factor",
+      code: "WIND_CF",
+      to: "sys",
+      d: "8760-hour wind output fraction.",
+      flag: true,
+      concept: "Capacity factor = actual energy produced / the theoretical max if the turbine ran flat-out all year. Wind sits around 0.35–0.55. It's the multiplier turning nameplate MW into real MWh. The 0.617 in this module vs the 0.354 measured in 2019 is the single load-bearing assumption — get it wrong and strategy rankings flip."
+    }, {
+      title: "Solar capacity factor",
+      code: "PV_CF",
+      to: "sys",
+      d: "Hourly solar output fraction.",
+      concept: "Same idea as wind CF but for panels — Scotland's is low, around 0.10. The model derives the marine profile from this one."
+    }]
+  }, {
+    id: "gen",
+    title: "Background Generation & Prices",
+    code: "Extra_Code/Generation/",
+    note: "Generation added outside modelled decisions, price paths, and stochastic calibration.",
+    children: [{
+      title: "Background generation buildout",
+      code: "BACKGROUND",
+      to: "sys",
+      d: "Renewables added independently of modelled build choices.",
+      concept: "Generation the model treats as happening anyway, regardless of your build choices. It's what fills the cable — and the 135 MW level is the regulatory trigger some strategies watch to decide when to build."
+    }, {
+      title: "Wholesale price path",
+      code: "price_series",
+      to: "sys",
+      d: "Per-scenario electricity price over time.",
+      concept: "The £/MWh exported energy earns. Drives the market-value half of the interconnector's benefit; the other half is avoided curtailment (constraint cost)."
+    }, {
+      title: "Stochastic calibration",
+      code: "GBM_Calibration · _Correlation",
+      to: "sys",
+      d: "Estimated volatilities plus a cross-driver correlation matrix.",
+      concept: "GBM = Geometric Brownian Motion, the random-walk model for a quantity that drifts and wanders proportionally (used for prices). Calibration fits its volatility to history; the correlation matrix makes demand, price and generation shocks move together realistically rather than independently."
+    }]
+  }, {
+    id: "options",
+    title: "Buildable Options",
+    code: "Options.py",
+    note: "Catalogue of what can be built — capacity, capex, opex, classification per option.",
+    children: [{
+      title: "220 MW interconnector",
+      code: "NewLink",
+      to: "sys",
+      d: "The main cable as a single build.",
+      concept: "The core asset and the one true 'option' — you hold the right, not the obligation, to build, and can wait for information before committing. That waiting value is what the whole dissertation measures."
+    }, {
+      title: "Staged link block",
+      code: "StagedLinkStage",
+      to: "rules",
+      d: "One increment of a multi-stage cable.",
+      concept: "Splits the cable into chunks built over time. Later stages get a learning-curve price cut (£/MW falls as you repeat). Staging trades some economy-of-scale for the ability to stop if demand disappoints."
+    }, {
+      title: "Wind build options",
+      code: "Stage1/2_Wind_Buildout",
+      to: "rules",
+      d: "Optional wind additions (inactive in Scope 1).",
+      concept: "Could let the model add wind, gated on the link existing. Switched off here so wind stays exogenous — otherwise it confounds the paired comparison between link strategies."
+    }, {
+      title: "Cable resizing option",
+      code: "Extra_Link",
+      to: null,
+      d: "DEAD CODE — defined but wired into no strategy.",
+      flag: true,
+      concept: "A leftover option to upsize the cable. Present in the file but connected to no active strategy, so it never fires. Buried with a single limitations sentence."
+    }]
+  }, {
+    id: "mc",
+    title: "Asset Registers",
+    code: "Model_Components.py",
+    note: "Track built capacity and opex over time; hold the pre-2019 fleet.",
+    children: [{
+      title: "Capacity registers",
+      code: "Generation_Capacity · Link_Capacity",
+      to: "sys",
+      d: "Tally built assets; report capacity and opex per year.",
+      concept: "Bookkeeping objects — as decisions fire they accumulate assets and return total MW and running cost for each year. The bridge between 'what got built' and 'what it costs'."
+    }, {
+      title: "Pre-2019 fleet",
+      code: "Existing_* · existing_alive_mw",
+      to: "sys",
+      d: "Starting assets plus a retirement schedule.",
+      concept: "The world as it stood at the 2019 decision point, plus REPD-based retirement dates so old wind drops out on schedule. Anchors the retrospective framing — nothing post-2019 leaks in."
+    }, {
+      title: "Committed build",
+      code: "Decision",
+      to: "results",
+      d: "A fired (asset, year) pair.",
+      concept: "An immutable record that a build happened. Strategies produce sequences of these; valuation reads them back."
+    }]
+  }]
+}, {
+  key: "eng",
+  title: "Engine & Strategy",
+  accent: ACCENT.eng,
+  nodes: [{
+    id: "rules",
+    title: "Decision Rules",
+    code: "Decision_Rules.py",
+    note: "The trigger machinery every strategy is assembled from.",
+    children: [{
+      title: "Base trigger",
+      code: "Rule · maybe_fire",
+      to: "sys",
+      d: "Fire once an observable crosses a threshold in a window.",
+      concept: "The atom of the decision logic: watch a signal (demand, background generation) and, when it breaches a threshold within an allowed window, exercise the option — once."
+    }, {
+      title: "Trend-projected trigger",
+      code: "TrendProjectedRule",
+      to: "sys",
+      d: "Fires on projected values, not current ones.",
+      concept: "Instead of reacting to today's number, it extrapolates the recent trend forward and acts on where the signal is heading. Buys lead time for builds that take years to deliver."
+    }, {
+      title: "Link triggers",
+      code: "make_main_link_rule / _cost_aware",
+      to: "sys",
+      d: "Plain and cost-screened cable triggers.",
+      concept: "Cost-aware adds an AND-gate: demand must justify the build AND the noisy cost estimate must look acceptable. This is what made the cost-aware strategy the top performer."
+    }, {
+      title: "NPV gate",
+      code: "make_npv_gate",
+      to: "sys",
+      d: "Veto a build that isn't value-positive.",
+      concept: "NPV = Net Present Value: future cash flows discounted to today, minus upfront cost. The gate blocks demand-justified builds whose forward NPV proxy is negative — stops the model building into a loss."
+    }, {
+      title: "Staged assembly",
+      code: "make_staged_link_strategy",
+      to: "sys",
+      d: "Chain the multi-stage build; later stages gate on generation.",
+      concept: "Wires the staged blocks into a strategy: stage 1 lands on schedule, later stages wait for background generation to appear before committing."
+    }, {
+      title: "Exercise record",
+      code: "FiredDecision",
+      to: "results",
+      d: "Logs decision year versus build year.",
+      concept: "Captures when the option was exercised and when the asset actually energises — the lag matters for discounting and for exercise-timing histograms."
+    }]
+  }, {
+    id: "sys",
+    title: "Simulation Engine",
+    code: "System_Model.py",
+    offsetTop: 150,
+    note: "Random-path samplers, strategy factories, and the core year-by-year loop.",
+    children: [{
+      title: "Correlated state draws",
+      code: "sample_correlated_gbm_shocks · _ou_mult_seq",
+      to: null,
+      d: "Random per-year paths, shared across strategies.",
+      concept: "OU = Ornstein-Uhlenbeck: a mean-reverting random walk — it wanders but is pulled back to a long-run level (unlike GBM, which drifts away). Correlated + paired means every strategy sees the same random world, so differences are pure strategy effect."
+    }, {
+      title: "Driver paths",
+      code: "sample_demand/price/background_seq",
+      to: null,
+      d: "Per-driver series built from the shared shocks.",
+      concept: "Turns the raw correlated shocks into the actual demand, price and generation trajectories the rules then react to."
+    }, {
+      title: "Capex-estimate reveal",
+      code: "sample_capex_estimate_seq",
+      to: null,
+      d: "A noisy cost estimate that sharpens over time.",
+      concept: "Models learning: early on you have only a fuzzy cost estimate; it converges toward the true capex as the decision nears. Cost-aware rules act on this evolving estimate, which is what gives waiting its value."
+    }, {
+      title: "Rigid strategies",
+      code: "_baseline · _staged",
+      to: "results",
+      d: "Build-now and fixed-phased benchmarks.",
+      concept: "The no-flexibility baselines. Baseline commits the whole cable immediately; Staged follows a fixed schedule regardless of what happens. Everything flexible is measured against these."
+    }, {
+      title: "Flexible strategies",
+      code: "_flexible · _flexible_cost_aware",
+      to: "results",
+      d: "Trigger-gated and cost-gated builds.",
+      concept: "These wait and watch, exercising only when signals justify it. The 2x2 contribution isolates staging from optionality — this is the optionality axis."
+    }, {
+      title: "Core simulation loop",
+      code: "Run_Strategy",
+      to: "results",
+      d: "One strategy × scenario × draw → costs and energy.",
+      concept: "The engine room: steps through each year, applies live rules, balances generation against demand and link capacity, and computes cost and LCOE. Called thousands of times across the Monte Carlo."
+    }]
+  }]
+}, {
+  key: "val",
+  title: "Valuation",
+  accent: ACCENT.val,
+  nodes: [{
+    id: "results",
+    title: "Valuation & Results",
+    code: "Results.py",
+    note: "Scenario-weighted Monte Carlo valuation, metrics and plots.",
+    children: [{
+      title: "Marginalised Monte Carlo",
+      code: "run_marginalised",
+      to: "disc",
+      d: "Scenario-weighted average over paired draws.",
+      concept: "Monte Carlo = run the random model thousands of times and read the distribution of outcomes. 'Marginalised' means averaging across the DFES scenarios by their weights, so no single future dominates."
+    }, {
+      title: "Pairing guard",
+      code: "assert_paired_draws",
+      to: null,
+      d: "Checks draws are shared per index across strategies.",
+      flag: true,
+      concept: "The integrity check the whole comparison rests on. If two strategies don't see the same random draw at the same index, differencing their NPVs is meaningless. Verified, never assumed."
+    }, {
+      title: "Metrics table",
+      code: "print_metrics_table",
+      to: null,
+      d: "ENPV, P(loss) and ranking.",
+      concept: "ENPV = Expected NPV (the mean). P(loss) = the share of draws where NPV < 0 — the downside-risk number that sits alongside the average, since a high mean can hide a fat tail of losses."
+    }, {
+      title: "Value of flexibility",
+      code: "print_headline_value_of_flexibility",
+      to: null,
+      d: "Headline VoF plus sweeps.",
+      concept: "Value of flexibility = ENPV(flexible) − ENPV(rigid): what the right-to-wait is worth in pounds. The dissertation decomposes it into a staging premium and an optionality premium."
+    }]
+  }, {
+    id: "sens",
+    title: "Sensitivity Analysis",
+    code: "Sensitivities.py",
+    note: "Parameter sweeps and crossover analysis.",
+    children: [{
+      title: "ENPV vs rate + breakeven",
+      code: "enpv · crossover",
+      to: null,
+      d: "How value moves with the discount rate.",
+      concept: "The discount rate sets how harshly future cash is penalised. Crossover = the rate at which two strategies swap ranking — it shows how fragile a 'winner' is to that single assumption."
+    }, {
+      title: "Scenario re-weighting",
+      code: "_run_marginalised_weighting",
+      to: null,
+      d: "NetZero-tilt versus equal weights, re-ranked.",
+      concept: "Tests whether the ranking survives believing some futures more than others. If the winner flips under plausible weightings, that's a finding, not a bug."
+    }, {
+      title: "Trigger sweeps",
+      code: "θ / cost_cap sweeps",
+      to: null,
+      d: "Vary the trigger θ and the cost cap.",
+      concept: "θ tunes how aggressive the trend trigger is; the cost cap tunes the cost-aware gate. Sweeping them maps how sensitive value-of-flexibility is to the rule design itself."
+    }]
+  }]
+}, {
+  key: "disc",
+  title: "Discovery",
+  accent: ACCENT.disc,
+  nodes: [{
+    id: "disc",
+    title: "Scenario Discovery",
+    code: "Scenario_Discovery.py",
+    note: "PRIM failure-region discovery in driver space (ema_workbench).",
+    children: [{
+      title: "PRIM loss boxes",
+      code: "compute_loss_flag · run_prim_for_strategy",
+      to: null,
+      d: "Locate the driver region where a strategy loses money.",
+      concept: "PRIM = Patient Rule Induction Method. Given thousands of runs labelled win/lose, it carves out the box of input conditions (e.g. low demand AND high capex) where failure concentrates. Turns 'it sometimes loses' into 'it loses exactly here'."
+    }, {
+      title: "Failure-region comparison",
+      code: "box_bounds_dict · plot_cross_strategy_comparison",
+      to: null,
+      d: "Extract box bounds; compare across strategies.",
+      concept: "Reads out each strategy's failure box and overlays them, so you can see which strategy fails in which corner of the uncertainty space — the payoff of the whole scenario-discovery step."
+    }]
+  }]
+}];
+const MOD_EDGES = [["demand", "sys"], ["cf", "sys"], ["gen", "sys"], ["mc", "sys"], ["options", "sys"], ["options", "rules"], ["rules", "sys"], ["mc", "results"], ["sys", "results"], ["sys", "sens"], ["results", "disc"]];
+const COL_OF = {};
+COLUMNS.forEach(c => c.nodes.forEach(n => COL_OF[n.id] = c.key));
+const Ctx = createContext(null);
+function Editable({
+  k,
+  def,
+  style,
+  block
+}) {
+  const {
+    get,
+    set,
+    bump,
+    ver
+  } = useContext(Ctx);
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    if (ref.current) ref.current.textContent = get(k, def);
+  }, [ver]); // set once per reset
+  return /*#__PURE__*/React.createElement("span", {
+    ref: ref,
+    contentEditable: true,
+    suppressContentEditableWarning: true,
+    spellCheck: false,
+    onBlur: e => {
+      set(k, e.currentTarget.textContent);
+      bump();
+    },
+    style: {
+      outline: "none",
+      cursor: "text",
+      display: block ? "block" : "inline",
+      borderRadius: 3,
+      overflowWrap: "anywhere",
+      wordBreak: "break-word",
+      whiteSpace: "normal",
+      ...style
+    },
+    onFocus: e => e.currentTarget.style.background = "#fff6d8",
+    onBlurCapture: e => e.currentTarget.style.background = "transparent"
+  });
+}
+function ModelGraph() {
+  const [ov, setOv] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(KEY)) || {};
+    } catch {
+      return {};
+    }
+  });
+  const [ver, setVer] = useState(0);
+  const [expanded, setExpanded] = useState(new Set());
+  const [expandedC, setExpandedC] = useState(new Set());
+  const [tick, setTick] = useState(0);
+  const [zoom, setZoom] = useState(0.7);
+  const wrapRef = useRef(null);
+  const nodeRefs = useRef({});
+  const [geom, setGeom] = useState({
+    mod: [],
+    child: [],
+    w: 0,
+    h: 0
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(ov));
+    } catch {}
+  }, [ov]);
+  const ctx = {
+    get: (k, d) => k in ov ? ov[k] : d,
+    set: (k, v) => setOv(p => ({
+      ...p,
+      [k]: v
+    })),
+    bump: () => setTick(t => t + 1),
+    ver
+  };
+  const toggle = id => setExpanded(p => {
+    const n = new Set(p);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+  const toggleC = k => setExpandedC(p => {
+    const n = new Set(p);
+    n.has(k) ? n.delete(k) : n.add(k);
+    return n;
+  });
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const run = () => {
+      const wr = wrap.getBoundingClientRect(),
+        sx = wrap.scrollLeft,
+        sy = wrap.scrollTop;
+      const z = wrap.offsetWidth ? wr.width / wrap.offsetWidth : 1; // effective CSS zoom
+      const LX = cx => (cx - wr.left) / z + sx;
+      const LY = cy => (cy - wr.top) / z + sy;
+      const R = el => el.getBoundingClientRect();
+      const rM = el => {
+        const r = R(el);
+        return {
+          x: LX(r.right),
+          y: LY(r.top + r.height / 2)
+        };
+      };
+      const lM = el => {
+        const r = R(el);
+        return {
+          x: LX(r.left),
+          y: LY(r.top + r.height / 2)
+        };
+      };
+      const bC = el => {
+        const r = R(el);
+        return {
+          x: LX(r.left + r.width / 2),
+          y: LY(r.bottom)
+        };
+      };
+      const tC = el => {
+        const r = R(el);
+        return {
+          x: LX(r.left + r.width / 2),
+          y: LY(r.top)
+        };
+      };
+      const mod = [];
+      MOD_EDGES.forEach(([a, b]) => {
+        const ea = nodeRefs.current[a],
+          eb = nodeRefs.current[b];
+        if (!ea || !eb) return;
+        if (COL_OF[a] === COL_OF[b]) {
+          mod.push({
+            s: bC(ea),
+            t: tC(eb),
+            vert: true
+          });
+          return;
+        }
+        if (a === "mc" && b === "results") {
+          const sys = nodeRefs.current["sys"];
+          const sr = sys ? R(sys) : R(ea);
+          const yLow = LY(sr.bottom) + 40;
+          const xTurn = LX(sr.right) + 34;
+          mod.push({
+            s: rM(ea),
+            t: lM(eb),
+            belly: true,
+            yLow,
+            xTurn
+          });
+          return;
+        }
+        mod.push({
+          s: rM(ea),
+          t: lM(eb)
+        });
+      });
+      const child = [];
+      COLUMNS.forEach(c => c.nodes.forEach(n => {
+        if (!expanded.has(n.id)) return;
+        n.children.forEach((ch, i) => {
+          if (!ch.to) return;
+          const ea = nodeRefs.current[`${n.id}::${i}`],
+            eb = nodeRefs.current[ch.to];
+          if (ea && eb) child.push({
+            s: rM(ea),
+            t: lM(eb),
+            accent: c.accent
+          });
+        });
+      }));
+      setGeom({
+        mod,
+        child,
+        w: wrap.scrollWidth,
+        h: wrap.scrollHeight
+      });
+    };
+    run();
+    const t = setTimeout(run, 40);
+    window.addEventListener("resize", run);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("resize", run);
+    };
+  }, [expanded, expandedC, tick, ver, zoom]);
+  const path = e => {
+    const dx = Math.max(40, Math.abs(e.t.x - e.s.x) * 0.5);
+    return `M ${e.s.x} ${e.s.y} C ${e.s.x + dx} ${e.s.y}, ${e.t.x - dx} ${e.t.y}, ${e.t.x} ${e.t.y}`;
+  };
+  const vpath = e => {
+    const dy = Math.max(20, (e.t.y - e.s.y) * 0.4);
+    return `M ${e.s.x} ${e.s.y} C ${e.s.x} ${e.s.y + dy}, ${e.t.x} ${e.t.y - dy}, ${e.t.x} ${e.t.y}`;
+  };
+  const reset = () => {
+    setOv({});
+    setVer(v => v + 1);
+  };
+  return /*#__PURE__*/React.createElement(Ctx.Provider, {
+    value: ctx
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#f6f7f9",
+      fontFamily: "system-ui,-apple-system,Segoe UI,sans-serif",
+      padding: "22px 0 40px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "0 24px 14px",
+      maxWidth: 3400,
+      margin: "0 auto",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 19,
+      fontWeight: 700,
+      color: ink,
+      letterSpacing: -.4
+    }
+  }, /*#__PURE__*/React.createElement(Editable, {
+    k: "header",
+    def: "Methodology_4 — data-flow graph"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#6b7280",
+      marginTop: 3
+    }
+  }, "Arrows = data flow. Click a bubble to fan out components; click a component for the concept. All text is editable. ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#c0392b"
+    }
+  }, "!"), " = landmine.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "0 0 auto",
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 2,
+      background: "#fff",
+      border: "1px solid #dfe3ea",
+      borderRadius: 6,
+      padding: "2px"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setZoom(z => Math.max(0.3, +(z - 0.1).toFixed(2))),
+    style: {
+      cursor: "pointer",
+      border: "none",
+      background: "transparent",
+      fontSize: 15,
+      color: "#6b7280",
+      width: 22,
+      lineHeight: 1
+    }
+  }, "−"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: "#6b7280",
+      width: 34,
+      textAlign: "center",
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, Math.round(zoom * 100), "%"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setZoom(z => Math.min(1.5, +(z + 0.1).toFixed(2))),
+    style: {
+      cursor: "pointer",
+      border: "none",
+      background: "transparent",
+      fontSize: 15,
+      color: "#6b7280",
+      width: 22,
+      lineHeight: 1
+    }
+  }, "+")), /*#__PURE__*/React.createElement("button", {
+    onClick: reset,
+    style: {
+      cursor: "pointer",
+      fontSize: 11.5,
+      color: "#6b7280",
+      background: "#fff",
+      border: "1px solid #dfe3ea",
+      borderRadius: 6,
+      padding: "6px 10px"
+    }
+  }, "Reset edits"))), /*#__PURE__*/React.createElement("div", {
+    ref: wrapRef,
+    style: {
+      position: "relative",
+      overflowX: "auto",
+      overflowY: "hidden",
+      padding: "8px 24px",
+      zoom
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: geom.w,
+    height: geom.h,
+    style: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      pointerEvents: "none",
+      zIndex: 1
+    }
+  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("marker", {
+    id: "ah",
+    markerWidth: "10",
+    markerHeight: "10",
+    refX: "7",
+    refY: "3",
+    orient: "auto",
+    markerUnits: "userSpaceOnUse"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M0,0 L7,3 L0,6 Z",
+    fill: "#5a6472"
+  })), Object.values(ACCENT).map(c => /*#__PURE__*/React.createElement("marker", {
+    key: c,
+    id: `ah${c}`,
+    markerWidth: "10",
+    markerHeight: "10",
+    refX: "7",
+    refY: "3",
+    orient: "auto",
+    markerUnits: "userSpaceOnUse"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M0,0 L7,3 L0,6 Z",
+    fill: c
+  })))), geom.mod.map((e, i) => e.vert ? /*#__PURE__*/React.createElement("path", {
+    key: "m" + i,
+    d: vpath(e),
+    fill: "none",
+    stroke: "#5a6472",
+    strokeWidth: 1.8,
+    markerEnd: "url(#ah)",
+    opacity: 0.9
+  }) : e.belly ? /*#__PURE__*/React.createElement("path", {
+    key: "m" + i,
+    d: `M ${e.s.x} ${e.s.y} C ${e.s.x + 45} ${e.s.y}, ${e.s.x + 45} ${e.yLow}, ${e.s.x + 95} ${e.yLow} L ${e.xTurn} ${e.yLow} C ${e.xTurn + 75} ${e.yLow}, ${e.t.x - 55} ${e.t.y}, ${e.t.x} ${e.t.y}`,
+    fill: "none",
+    stroke: "#7b8695",
+    strokeWidth: 1.7,
+    markerEnd: "url(#ah)",
+    opacity: 0.95
+  }) : /*#__PURE__*/React.createElement("path", {
+    key: "m" + i,
+    d: path(e),
+    fill: "none",
+    stroke: "#7b8695",
+    strokeWidth: 1.7,
+    markerEnd: "url(#ah)",
+    opacity: 0.95
+  })), geom.child.map((e, i) => /*#__PURE__*/React.createElement("path", {
+    key: "c" + i,
+    d: path(e),
+    fill: "none",
+    stroke: e.accent,
+    strokeWidth: 2,
+    markerEnd: `url(#ah${e.accent})`,
+    opacity: 1
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      zIndex: 2,
+      display: "flex",
+      gap: 130,
+      alignItems: "flex-start",
+      minWidth: "min-content",
+      maxWidth: 3400,
+      margin: "0 auto"
+    }
+  }, COLUMNS.map(col => /*#__PURE__*/React.createElement("div", {
+    key: col.key,
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 72,
+      width: 528,
+      minWidth: 528,
+      maxWidth: 528,
+      flex: "0 0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10.5,
+      fontWeight: 700,
+      letterSpacing: .6,
+      color: col.accent,
+      textTransform: "uppercase",
+      paddingLeft: 2
+    }
+  }, /*#__PURE__*/React.createElement(Editable, {
+    k: `col:${col.key}`,
+    def: col.title
+  })), (col.key === "val" ? [...col.nodes].reverse() : col.nodes).map(n => {
+    const open = expanded.has(n.id);
+    return /*#__PURE__*/React.createElement("div", {
+      key: n.id,
+      ref: el => nodeRefs.current[n.id] = el,
+      style: {
+        marginTop: n.offsetTop || 0,
+        background: "#fff",
+        borderRadius: 12,
+        border: `1px solid ${open ? col.accent : "#dfe3ea"}`,
+        borderLeft: `4px solid ${col.accent}`,
+        boxShadow: open ? `0 6px 20px ${col.accent}22` : "0 1px 3px rgba(0,0,0,.05)",
+        transition: "box-shadow .2s, border-color .2s"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "11px 13px"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 7
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      onClick: () => toggle(n.id),
+      style: {
+        cursor: "pointer",
+        color: "#9aa3b0",
+        fontSize: 10,
+        transform: open ? "rotate(90deg)" : "none",
+        transition: "transform .18s",
+        userSelect: "none"
+      }
+    }, "▶"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13.5,
+        fontWeight: 650,
+        color: ink
+      }
+    }, /*#__PURE__*/React.createElement(Editable, {
+      k: `t:${n.id}`,
+      def: n.title
+    }))), /*#__PURE__*/React.createElement("code", {
+      style: {
+        display: "block",
+        fontFamily: "ui-monospace,'JetBrains Mono',Menlo,monospace",
+        fontSize: 10.5,
+        color: "#9aa3b0",
+        marginTop: 3,
+        paddingLeft: 17
+      }
+    }, /*#__PURE__*/React.createElement(Editable, {
+      k: `code:${n.id}`,
+      def: n.code
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "#6b7280",
+        lineHeight: 1.4,
+        marginTop: 5,
+        paddingLeft: 17
+      }
+    }, /*#__PURE__*/React.createElement(Editable, {
+      k: `note:${n.id}`,
+      def: n.note,
+      block: true
+    }))), open && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "0 11px 11px"
+      }
+    }, n.children.map((ch, i) => {
+      const ck = `${n.id}::${i}`,
+        copen = expandedC.has(ck);
+      return /*#__PURE__*/React.createElement("div", {
+        key: i,
+        ref: el => nodeRefs.current[ck] = el,
+        style: {
+          background: ch.flag ? "#fdf3f2" : "#f4f6f9",
+          border: `1px solid ${ch.flag ? "#e7c3bd" : "#e3e7ee"}`,
+          borderRadius: 8,
+          padding: "7px 9px",
+          marginTop: 7
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "baseline",
+          gap: 6
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        onClick: () => toggleC(ck),
+        style: {
+          cursor: "pointer",
+          color: "#9aa3b0",
+          fontSize: 9,
+          userSelect: "none",
+          transform: copen ? "rotate(90deg)" : "none",
+          display: "inline-block"
+        }
+      }, "▶"), /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 12,
+          fontWeight: 600,
+          color: ch.flag ? "#b0392c" : ink
+        }
+      }, /*#__PURE__*/React.createElement(Editable, {
+        k: `ct:${ck}`,
+        def: ch.title
+      })), ch.flag && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 9,
+          color: "#c0392b",
+          border: "1px solid #e2a9a2",
+          borderRadius: 3,
+          padding: "0 3px"
+        }
+      }, "!")), /*#__PURE__*/React.createElement("code", {
+        style: {
+          display: "block",
+          fontFamily: "ui-monospace,monospace",
+          fontSize: 10,
+          color: "#9aa3b0",
+          margin: "2px 0 0 15px"
+        }
+      }, /*#__PURE__*/React.createElement(Editable, {
+        k: `cc:${ck}`,
+        def: ch.code
+      })), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          color: ch.flag ? "#a5352a" : "#5a626e",
+          lineHeight: 1.45,
+          marginTop: 3,
+          paddingLeft: 15
+        }
+      }, /*#__PURE__*/React.createElement(Editable, {
+        k: `cd:${ck}`,
+        def: ch.d,
+        block: true
+      })), copen && /*#__PURE__*/React.createElement("div", {
+        style: {
+          marginTop: 7,
+          marginLeft: 15,
+          padding: "8px 10px",
+          background: "#fff",
+          border: `1px dashed ${col.accent}66`,
+          borderRadius: 7,
+          fontSize: 11,
+          lineHeight: 1.5,
+          color: "#3f4652"
+        }
+      }, /*#__PURE__*/React.createElement(Editable, {
+        k: `concept:${ck}`,
+        def: ch.concept,
+        block: true
+      })));
+    })));
+  })))))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ModelGraph));
+</script></body></html>
