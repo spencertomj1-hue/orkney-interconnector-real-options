@@ -64,7 +64,6 @@ def _do_nothing(capex_mult=1.0):
     return [Decision(NewLink(capex_mult), None)]
 
 ALL_STRATEGIES = {"Do Nothing": _do_nothing, **Strategies_2, **Strategies_Flex}
-print("strategies:", list(ALL_STRATEGIES.keys()))
 
 # Recomputed fresh under current strategy defaults rather than read back from
 # the cache, so a code change to e.g. a strategy's gate_mode is reflected here
@@ -73,7 +72,6 @@ marg_store = {sname: np.empty(N) for sname in ALL_STRATEGIES}
 marg_cost = {sname: np.empty(N) for sname in ALL_STRATEGIES}
 marg_energy = {sname: np.empty(N) for sname in ALL_STRATEGIES}
 
-print(f"running {N} draws x {len(ALL_STRATEGIES)} strategies...", flush=True)
 for i in range(N):
     capex_mult = _CACHE["draw_capex"][i]
     scenario = _CACHE["draw_scenario"][i]
@@ -88,7 +86,6 @@ for i in range(N):
         marg_store[sname][i] = res[3]
         marg_cost[sname][i] = res[0]
         marg_energy[sname][i] = res[1]
-print("replay done.\n")
 
 draw_capex = _CACHE["draw_capex"]
 draw_scenario = _CACHE["draw_scenario"]
@@ -168,4 +165,3 @@ _sd_csv_path = _sd_dir + "/mc_draws.csv"
 _experiments.to_csv(_sd_csv_path, index=False)
 print(f"scenario discovery experiments table written to {_sd_csv_path}, "
       f"{len(_experiments)} rows x {len(_experiments.columns)} columns")
-print(f"columns: {list(_experiments.columns)}")

@@ -51,8 +51,7 @@ def bootstrap_interaction(seed=SEED, n_boot=N_BOOTSTRAP, make_plot=True):
     point_optionality = float(optionality_i.mean())
 
     print(f"n draws = {n}")
-    print(f"Point estimate: mean(interaction_i) = £{point_interaction/1e6:+.2f}m "
-          f"(previously reported: £-8.5m)")
+    print(f"Point estimate: mean(interaction_i) = £{point_interaction/1e6:+.2f}m")
 
     # Resample the SAME index into all four arrays each iteration -- resampling
     # each strategy independently would break the paired-draws structure.

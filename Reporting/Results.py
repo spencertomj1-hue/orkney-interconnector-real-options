@@ -338,22 +338,7 @@ if RUN_MC:
         print(f"{'flexible':<12}{enpv_X1/1e6:>14.1f}{enpv_X4/1e6:>14.1f}")
 
         total_premium = enpv_X4 - enpv_B
-        staging_first = [("Fixed - Baseline (staging, at rigid)", enpv_F - enpv_B),
-                          ("Flex4 - Fixed (optionality, at 4-stage)", enpv_X4 - enpv_F)]
-        optionality_first = [("Flex1 - Baseline (optionality, at 1-stage)", enpv_X1 - enpv_B),
-                              ("Flex4 - Flex1 (staging, at flexible)", enpv_X4 - enpv_X1)]
         interaction = enpv_X4 - enpv_F - enpv_X1 + enpv_B
-
-        print("\n=== Decomposition paths (£m) ===")
-        print("Staging-first: Baseline -> Fixed 4-Stage -> Flexible 4-Stage")
-        for label, v in staging_first:
-            print(f"  {label}: {v/1e6:+.2f}")
-        print(f"  path total: {sum(v for _, v in staging_first)/1e6:+.2f}")
-        print("Optionality-first: Baseline -> Flexible 1-Stage -> Flexible 4-Stage")
-        for label, v in optionality_first:
-            print(f"  {label}: {v/1e6:+.2f}")
-        print(f"  path total: {sum(v for _, v in optionality_first)/1e6:+.2f}")
-        print(f"\nInteraction (non-additivity) = Flex4 - Fixed - Flex1 + Baseline = £{interaction/1e6:+.2f}m")
 
         # Shapley (exact for 2 factors): each factor's effect = mean of its
         # marginal contribution across both orderings.
@@ -869,32 +854,11 @@ if RUN_MC:
         print(f"(written to {path})")
         return path
 
-    _pnz_skipped = [
-        ("Point-metric summary table (ENPV per strategy)",
-         "print_metrics_table() above — console table, ENPV/P5/P50/P95/etc. per strategy"),
-        ("Percentile columns (P5/P95 alongside ENPV)",
-         "print_metrics_table() above — same table already carries P5/P50/P95 columns"),
-        ("CDF / target curves (NPV per strategy, overlaid)",
-         "\"Target curves — absolute NPV\" block above -> Images/target_curves_marginalised.png"),
-    ]
-    _pnz_implemented = [
-        ("Cost/input distribution histogram (capex multiplier)", plot_capex_distribution()),
-        ("Sensitivity line plot: value of flexibility vs discount rate", plot_value_of_flexibility_vs_rate()),
-        ("Sensitivity line plot: value of flexibility vs AVAIL (CF/degradation driver)",
-         plot_value_of_flexibility_vs_avail()),
-        ("Headline % value-of-flexibility figure", print_headline_value_of_flexibility()),
-        ("Reference cost/parameter input table", build_reference_input_table()),
-    ]
-    print("\n" + "=" * 78)
-    print("PNZ 2025 results-presentation methods — implementation summary")
-    print("=" * 78)
-    print(f"\nSKIPPED (already present, {len(_pnz_skipped)}):")
-    for _name, _where in _pnz_skipped:
-        print(f"  - {_name}\n      -> {_where}")
-    print(f"\nIMPLEMENTED (new, {len(_pnz_implemented)}):")
-    for _name, _where in _pnz_implemented:
-        print(f"  - {_name}\n      -> {_where}")
-    print()
+    plot_capex_distribution()
+    plot_value_of_flexibility_vs_rate()
+    plot_value_of_flexibility_vs_avail()
+    print_headline_value_of_flexibility()
+    build_reference_input_table()
 
     # Sections 9-18 (RESIDUAL_ON_OVERRUN, CONSTRAINT_COST, STAGED_LINK_*,
     # LINK_OPEX_RATE, AVAIL, GBM_SHOCK_CORR, CAPEX_P90 breakeven, cost-aware

@@ -45,7 +45,6 @@ OUTCOME_DISPLAY = {
     "npv_below_zero": "loss defined as NPV < £0",
     "worse_than_do_nothing": "loss defined as NPV worse than Do Nothing",
     "lcoe_above_threshold": f"loss defined as incremental LCOE > £{LCOE_FAIL_THRESHOLD:.0f}/MWh vs Do Nothing",
-    "regret": "regret vs best of the 4 build strategies (excl. Do Nothing)",
 }
 
 # The 4 headline strategies plus Flexible 1-Stage (Cost-Aware) as a 5th (Do
