@@ -1,4 +1,7 @@
-# Demand shape construction: see docs/notes/Inputs/Data_Processing/CF/Hourly_For_CF.md#building-the-annual-demand-shape
+# Builds an 8760-hour normalised demand shape per year (2012-2018) from raw
+# minute-level SSEN Active Network Management data for Orkney, looped over
+# years; the leap day is dropped to match the wind library's 8760-hour
+# convention (Qmap.py). Output sums to 1.0 -- multiply by an annual total.
 
 import numpy as np
 import pandas as pd

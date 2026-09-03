@@ -1,4 +1,9 @@
-"""See docs/notes/Inputs/Data_Processing/CF/Wind/REPD_Existing_Wind_Vintages.md#overview for full description."""
+"""Orkney operational onshore wind vintages from the DESNZ REPD. Extracts the
+real commission year for each currently-operational Orkney onshore wind
+site, groups by commission year, and writes the result to
+orkney_existing_wind_vintages.csv -- Model_Components.py reads that CSV
+rather than parsing the 14k-row REPD workbook at import time. Re-run to
+regenerate the CSV if REPD updates."""
 import pandas as pd
 
 PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
@@ -16,7 +21,9 @@ stat, cap, site = col("status"), col("capacity"), col("site", "name")
 o = df[df[auth].astype(str).str.contains("Orkney", na=False)].copy()
 o[cap] = pd.to_numeric(o[cap], errors="coerce")
 
-# Solar PV coverage: see docs/notes/Inputs/Data_Processing/CF/Wind/REPD_Existing_Wind_Vintages.md#repd-has-no-solar-rows
+# REPD has zero Orkney rows for solar (only Wind Onshore, Battery, Hydrogen),
+# so Existing_PV (1.558 MW) can't be sourced here -- it stays on its
+# placeholder commission year in Model_Components.py, flagged there.
 w = o[o[tech].astype(str).str.contains("Wind Onshore", case=False, na=False)]
 op = w[w[stat].astype(str).str.contains("Operational", case=False, na=False)].copy()
 op["commission_year"] = pd.to_datetime(op["Operational"]).dt.year

@@ -1,4 +1,8 @@
-"""See docs/notes/Inputs/Data_Processing/Demand/EV_Fcator.md#overview for full description."""
+"""Derives KWH_PER_EV_CAR for Orkney from published data: annual miles per
+car = Orkney car vehicle-miles / Orkney licensed cars; kWh per car per year
+= miles per car x kWh per mile. Sources: Traffic_Volume.csv (DfT road
+traffic statistics), CARS_LICENSED (DfT VEH0105), KWH_PER_MILE (external
+assumption, real-world BEV consumption)."""
 
 import pandas as pd
 from pathlib import Path

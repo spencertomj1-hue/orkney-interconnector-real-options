@@ -1,4 +1,7 @@
-# Purpose: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#purpose-calibrating-gbm-parameters-from-data
+# Calibrates DEMAND_GBM_SIGMA, PRICE_GBM_SIGMA and BACKGROUND_GBM_SIGMA
+# (System_Model.py's GBM samplers) from measured data rather than unsourced
+# placeholders. Imported once at System_Model.py load time; kept out of that
+# file since it reaches into the separate Forecasting project folder.
 
 import os
 import sys
@@ -8,7 +11,9 @@ import csv
 import numpy as np
 from Inputs.Data_Processing.Generation.Prices import PRICES as _HIST_PRICE_TABLE
 
-# Demand sigma data source: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#demand-sigma-data-source
+# Same raw source as System_Model.py's dem_shape_*.npy hourly shapes (see
+# Hourly_For_CF.py), just the annual totals rather than the hourly shape
+# normalised to sum to 1.
 DEMAND_ANNUAL_CSV = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
                       "Forecasting - Week 1/Data/demand_annual_clean.csv")
 
@@ -26,7 +31,12 @@ def _load_demand_annual(path=None):
     return out
 
 
-# Methodology: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#estimate_demand_gbm_sigma-methodology
+# Std of annual log-changes in the measured ANM demand series (SSEN Orkney).
+# Restricted to status=='complete' years, diffed only across CONSECUTIVE
+# complete years so a diff never spans a gap year (2015/2018/2022). Uses raw
+# measured demand, not the weather-corrected series Demand.py's trend was fit
+# on -- acceptable, that's the kind of unmodelled variation GBM noise is
+# meant to capture anyway.
 def estimate_demand_gbm_sigma(path=None):
     complete = _load_demand_annual(path)
     years = sorted(complete)
@@ -38,11 +48,16 @@ def estimate_demand_gbm_sigma(path=None):
 DEMAND_GBM_SIGMA_ESTIMATED = estimate_demand_gbm_sigma()   # SSEN ANM annual demand, complete years 2012-2021 -- n=5 consecutive-pair diffs, small sample
 
 
-# Price sigma: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#price-sigma-historical-actuals-definition
+# Prices.py's Low/Central/High scenario variants only fan out once
+# projections start, so the years where all three columns agree are the
+# historical actuals block, not an arbitrarily chosen variant.
 PRICE_CRISIS_YEARS = range(2021, 2024)   # gas-price shock, excluded from the "normal times" estimate below
 
 
-# What counts as historical: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#_load_price_annual-what-counts-as-historical
+# Returns {year: historical wholesale baseload price, GBP/MWh real} for years
+# where Prices.py's Low/Central/High columns all agree, i.e. the
+# historical-actuals block, not a scenario projection. Factored out so
+# GBM_Correlation.py can reuse the same historical series.
 def _load_price_annual(exclude_years=None):
     hist = _HIST_PRICE_TABLE[(_HIST_PRICE_TABLE["Low"] == _HIST_PRICE_TABLE["Central"]) &
                               (_HIST_PRICE_TABLE["Central"] == _HIST_PRICE_TABLE["High"])]["Central"]
@@ -51,7 +66,9 @@ def _load_price_annual(exclude_years=None):
     return hist.to_dict()
 
 
-# What it does: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#estimate_price_gbm_sigma-what-it-does
+# Std of annual log-changes in DESNZ Annex M's historical wholesale baseload
+# price (GBP/MWh, real). exclude_years drops given years (e.g.
+# PRICE_CRISIS_YEARS) before differencing, for a "normal times" estimate.
 def estimate_price_gbm_sigma(exclude_years=None):
     hist = _load_price_annual(exclude_years)
     years = sorted(hist)
@@ -63,15 +80,32 @@ PRICE_GBM_SIGMA_ESTIMATED = estimate_price_gbm_sigma()                          
 PRICE_GBM_SIGMA_ESTIMATED_EXCL_CRISIS = estimate_price_gbm_sigma(exclude_years=PRICE_CRISIS_YEARS)   # 2001-2020 only
 
 
-# What this proxies for: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#background-generation-sigma-what-it-proxies-for
+# Not a literal match for what BACKGROUND_GBM_SIGMA models (the DFES
+# background-generation PIPELINE's build-out noise, not the existing fleet's
+# output) -- there's no historical track record for that specific forecast
+# pipeline. This is the closest measured Orkney generation series available,
+# the same role PRICE_GBM_SIGMA's UK-wholesale proxy plays for a local price
+# series that doesn't exist.
 GENERATION_ANNUAL_CSV = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
                           "Forecasting - Week 1/Data/generation_annual_clean.csv")
 
-# Rationale: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#generation_coverage_threshold-rationale
+# generation_annual_clean.csv's own status flag is far stricter than
+# demand's (coverage >= ~0.92, keeping only 3 of 10 years: 2012/2020/2021 --
+# a single consecutive pair) than demand's own flag (8 of 10 years). A
+# day-coverage THRESHOLD instead admits partial-coverage years too,
+# annualised by dividing by their coverage fraction -- cruder than demand's
+# own month-aware backfill, but the best available without redoing the
+# cleaning pipeline. 0.75 sits exactly between the weakest year worth
+# keeping (2015=0.649) and the run of partial-but-usable years above it
+# (2013=0.764 ... 2019=0.877), with 2018 (0.085) and 2022 (0.066) excluded
+# either way -- checked directly against the file, not tuned to hit a target
+# sample size.
 GENERATION_COVERAGE_THRESHOLD = 0.75
 
 
-# Coverage-based admission: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#_load_generation_annual-coverage-based-admission
+# Returns {year: annualised generation energy, MWh} for every year at/above
+# threshold day-coverage -- see GENERATION_COVERAGE_THRESHOLD above for why
+# 0.75 and why coverage-based admission beats the file's complete flag.
 def _load_generation_annual(path=None, threshold=None):
     if path is None:
         path = GENERATION_ANNUAL_CSV
@@ -86,7 +120,11 @@ def _load_generation_annual(path=None, threshold=None):
     return out
 
 
-# Diff rule: see docs/notes/Inputs/Data_Processing/Generation/GBM_Calibration.md#estimate_background_gbm_sigma-diff-rule
+# Std of annual log-changes in measured Orkney generation output (see the
+# proxy caveat above GENERATION_ANNUAL_CSV). Diffed only across consecutive
+# admitted years -- same no-diff-spans-a-gap rule as estimate_demand_gbm_sigma
+# -- e.g. 2015 (below threshold) breaks the 2014-2016 pair even though both
+# individually clear the bar.
 def estimate_background_gbm_sigma(path=None, threshold=None):
     gen = _load_generation_annual(path, threshold)
     years = sorted(gen)

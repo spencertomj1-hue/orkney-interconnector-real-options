@@ -1,4 +1,6 @@
-"""See docs/notes/Inputs/Data_Processing/Generation/Generation.md#overview for full description."""
+"""Generation cleaning -- mirrors demand pipeline conventions. Energy-from-
+the-start: MW x dt integration, never mean-of-means. Valid day: span >= 23h
+AND max gap <= 20 min."""
 
 import pandas as pd
 import numpy as np

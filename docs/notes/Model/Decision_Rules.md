@@ -150,10 +150,6 @@ Replaces the plain screen rather than stacking with it — the whole point is co
 
 Fires only if `background_gen_mw` exceeds threshold AND the `capex_mult` estimate (`state["capex_estimate"]`, sharpens to true value by year 5) is `<= cost_cap` — defers a congestion-justified build if the cost estimate looks like an overrun. No `max_defer`, same reasoning as the headline. Fix A/B knobs: same meaning and defaults as `make_main_link_rule`'s (this is the earlier plain trailing-mean variant — kept for its own self-test, not the one `System_Model._flexible_cost_aware` calls, but given the same knobs for consistency).
 
-## make_stage1_wind_gated_rule: design
-
-Builds once Main Link is live (prereq), not on a fixed year. Physical condition is a dummy (delivered always >-1) — the real gate is prereq; `window=1` minimises added delay. `lead=1`: online 1yr after the link. `prereq` is overridable (e.g. `"StagedLinkStage"` for `make_staged_link_strategy`, where the link isn't a single `NewLink`) — default unchanged for every existing caller. The prereq gate chains this generation option onto the transmission option firing first — the same sequential-compound-option dependency as [2], just with generation and transmission run in the opposite order.
-
 ## make_staged_link_strategy: design
 
 Rule-based staged interconnector — the phased-deployment design alternative to a single fixed-year block, evaluated against it the same way [3] compares phased against fixed PV capacity deployment. Stage 1 gates on `background_gen_mw` like Main Link via `TrendProjectedRule`'s trend-projected trigger (fires when generation is projected to cross `MAIN_LINK_BG_GEN_THRESHOLD` within `TREND_LOOKAHEAD_YEARS`) — an unconditional fixed year is still available via `stage1_conditional=False`. Each later stage is a `StagedLinkRule` gated on (a) the previous stage being live and (b) total generation exceeding a threshold scaled from `MAIN_LINK_BG_GEN_THRESHOLD` by that stage's cumulative share of 220MW, for `M` consecutive years (`theta` multiplies that scaled threshold, 1.0 = exact proportional scaling). Stages build in strict order and the strategy stops once every `stage_sizes` entry has fired. Returns a flat list of `StagedLinkRule` instances — Options-list compatible, drop straight into a strategy factory's return list.
@@ -168,7 +164,7 @@ Realised capex multiplier for THIS stage = the noisy early estimate at ITS OWN b
 
 ## make_staged_link_strategy: unconditional stage 1 fallback
 
-Default: unconditional fixed-year build — dummy always-true condition on `"delivered"` (always >=0, always computed), same pattern `make_stage1_wind_gated_rule` uses for its own non-physical gate.
+Default: unconditional fixed-year build — dummy always-true condition on `"delivered"` (always >=0, always computed).
 
 ## make_staged_link_strategy: Ofgem-style threshold scaling
 

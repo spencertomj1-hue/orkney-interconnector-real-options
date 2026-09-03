@@ -1,34 +1,66 @@
-# References [1]-[3] and module overview: see docs/notes/Model/Decision_Rules.md#references-and-module-overview
+# [1] Henao, Sauma, Reyes, Gonzalez (2017) Value of the option to defer a
+#     transmission investment, Energy Economics 65.
+# [2] Nur, MacKenzie, Min (2026) Valuation of a sequential compound option for
+#     generation/transmission expansion, J. Economy and Technology 4.
+# [3] Graca Gomes, Cardin, Wu (2025) Strategic real options for solar PV, IET PNZ 2025.
+#
+# Flexible-strategy decision rules (Cardin/Graca Gomes framework [3]):
+# pre-specified managerial decision rules combined with Monte Carlo
+# simulation, rather than a backward-induction binomial lattice, are used to
+# price the flexibility to defer/stage each investment -- the same
+# rule-based-real-options substitution [3] makes for solar PV capacity
+# expansion. A Rule watches a trailing window of an observable from
+# Run_Strategy's state and, once satisfied, commits capital at the year it
+# fires ("decision year"); capacity lands `lead` years later ("build year").
+# Forward-only: never looks ahead.
 
 import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
-from Model.Options import (Stage1_Wind_Buildout, Stage2_Wind_Buildout, Extra_Link, NewLink,
+from Model.Options import (Extra_Link, NewLink,
                      StagedLinkStage, stage_variable_permw,
                      STAGED_LINK_STAGE_SIZES_DEFAULT, STAGED_LINK_STAGE1_YEAR_DEFAULT,
-                     STAGED_LINK_FIXED_PER_STAGE, STAGED_LINK_BASE_PERMW,
-                     STAGED_LINK_LEARNING_MODE_DEFAULT, REBASE_2018_TO_2023)
+                     STAGED_LINK_FIXED_PER_STAGE, STAGED_LINK_BASE_PERMW, REBASE_2018_TO_2023)
 
 # ---- thresholds, exposed as module constants so they can be swept later ----
-STAGE2_WIND_CURTAIL_THRESHOLD = 0.10      # curtail_frac, trailing mean, "below"
 EXTRA_LINK_HOURS_THRESHOLD = 1500          # hours_at_cap, trailing mean, "above"
 
-# see docs/notes/Model/Decision_Rules.md#staged-link-stage-design-commitment-and-thresholds
+# Stage 1 is a DELIBERATE unconditional commitment at a fixed year -- a
+# committed baseline build, a genuinely different posture from Flexible's
+# fully-optional Main Link. Stages 2+ trigger on TOTAL GENERATION
+# (background_gen_mw), also Ofgem's own approval-condition metric. Each
+# stage's threshold = MAIN_LINK_BG_GEN_THRESHOLD scaled by that stage's
+# cumulative share of 220MW, adjusted by STAGED_LINK_THETA (1.0 = exact
+# proportional scaling, no independent source beyond the scaling logic --
+# STAGED_LINK_THETA_SWEEP tests sensitivity around that anchor).
 STAGED_LINK_THETA = 1.0
 STAGED_LINK_THETA_SWEEP = [0.7, 0.85, STAGED_LINK_THETA, 1.15, 1.3]
 STAGED_LINK_M = 3           # consecutive years threshold must hold, stops chattering on one noisy year
 STAGED_LINK_LEAD = 3        # years, decision -> build (later stages only; stage 1 uses stage1_year directly)
 STAGED_LINK_DEADLINE = 2051
 
-# see docs/notes/Model/Decision_Rules.md#main-link-trigger-background_gen_mw-threshold
+# 135MW = Ofgem's actual approved minimum-generation condition for the
+# 220MW link (2019 decision letter; compromise between SHE-T's 70MW
+# break-even and the ESO CBA's 199MW tipping point). A decision-rule reading
+# of the same "option to defer a transmission investment until conditions
+# justify it" problem [1] values with a backward-induction binomial tree.
 MAIN_LINK_BG_GEN_THRESHOLD = 135           # background_gen_mw, trailing mean, "above" ([1] in Options.py, see comment above)
 
-# see docs/notes/Model/Decision_Rules.md#fix-a-composite-growth_index-observable-caveat
+# Alternative observable for make_main_link_rule: blends demand's own growth
+# with background_gen_mw's growth so both exogenous DFES drivers register,
+# not only generation. CAVEAT (checked against DFES data): doesn't diverge
+# meaningfully earlier than background_gen_mw alone -- blending dilutes the
+# early signal rather than sharpening it. Kept as a toggle, not expected to
+# move ENPV much on its own.
 GROWTH_INDEX_THRESHOLD = 1.0   # ILLUSTRATIVE calibration point: roughly where background_gen_mw=135MW (bg term=1.0) AND demand~=its 2019 base level (demand term~=1.0) both individually cross their own "1.0" -- not independently sourced, sanity-check before trusting.
 
-# see docs/notes/Model/Decision_Rules.md#fix-a-v3-dfes_background_gen_mw-threshold
+# Isolates background_gen_mw's DFES-only component. Reuses
+# MAIN_LINK_BG_GEN_THRESHOLD as a placeholder -- UNCALIBRATED for this
+# narrower signal (135MW was calibrated as a TOTAL-generation figure), so
+# sanity-check before trusting exact crossing years; the cross-scenario
+# SPREAD this produces is what's actually being tested, not the absolute level.
 DFES_BACKGROUND_THRESHOLD = MAIN_LINK_BG_GEN_THRESHOLD
 
 MAIN_LINK_OBSERVABLES = {
@@ -40,7 +72,9 @@ MAIN_LINK_OBSERVABLES = {
 WINDOW = 3   # trailing years, all three rules
 
 
-# see docs/notes/Model/Decision_Rules.md#fireddecision-read-interface
+# Result of a Rule firing. Same read interface as Model_Components.Decision
+# (Asset/BuildYear/IsBuilt), plus CapexYear() since capex and capacity land
+# in different years.
 class FiredDecision:
     def __init__(self, asset, decision_year, build_year):
         self._asset = asset
@@ -77,11 +111,19 @@ class Rule:
         self.prereq = prereq
         self.max_defer = max_defer
         self.cost_cap = cost_cap   # optional AND-gate: current capex estimate must be <= this
-        # see docs/notes/Model/Decision_Rules.md#rulecost_cap_max_defer-fix-b-force-through-ceiling
+        # Optional force-through ceiling on years blocked BY cost_cap
+        # specifically -- distinct from max_defer, which only counts years
+        # the PHYSICAL condition was false. None (default): a cost_cap block
+        # can defer forever if the estimate never sharpens below it.
         self.cost_cap_max_defer = cost_cap_max_defer
-        # see docs/notes/Model/Decision_Rules.md#ruleextra_gate-fix-b-alternative-and-gate
+        # Optional callable(state, t_idx, Year, build_year) -> bool, checked
+        # after cost_cap, for a richer AND-gate than a bare cost ceiling (see
+        # make_npv_gate below). None (default): no extra gate.
         self.extra_gate = extra_gate
-        # see docs/notes/Model/Decision_Rules.md#rulemin_decision_year-fix-a-calendar-floor
+        # Earliest calendar year this rule may fire at all, regardless of
+        # window/prereq eligibility. None (default): unchanged behaviour --
+        # lets a trend fit be forced to wait until scenarios have actually
+        # started to diverge instead of committing on a still-flat window.
         self.min_decision_year = min_decision_year
 
         self.fired = False
@@ -109,7 +151,9 @@ class Rule:
             return trailing_mean < self.threshold
         return trailing_mean > self.threshold
 
-    # see docs/notes/Model/Decision_Rules.md#rulemaybe_fire-evaluation-timing
+    # Evaluated at the end of simulation year Year (t_idx = Year - start).
+    # Reads only state[observable][t_idx-window+1 : t_idx+1] -- never an
+    # index beyond the current year.
     def maybe_fire(self, Year, t_idx, state, is_live_fn):
         if not self._eligible(Year, t_idx, is_live_fn):
             return None
@@ -128,11 +172,18 @@ class Rule:
                 condition = True   # deferral limit reached: force-fire
 
         if condition and self.cost_cap is not None:
-            # see docs/notes/Model/Decision_Rules.md#rulemaybe_fire-cost_cap-and-gate-read
+            # AND-gate on the current (possibly noisy, sharpening over time)
+            # capex_mult estimate, read directly at this year, not
+            # trailing-averaged like the physical observables. Too expensive
+            # right now -> defer, not a permanent block: re-evaluated next year.
             current_estimate = state["capex_estimate"][t_idx]
             if current_estimate > self.cost_cap:
                 if self.cost_cap_max_defer is not None:
-                    # see docs/notes/Model/Decision_Rules.md#rulemaybe_fire-fix-b-cost_cap_max_defer-logic
+                    # Unlike max_defer above (which only counts years the
+                    # PHYSICAL condition was false), this counts years the
+                    # physical condition WAS true but cost_cap blocked anyway
+                    # -- so a persistently-expensive draw still forces a
+                    # build eventually instead of deferring forever.
                     self._cost_defer_count += 1
                     if self._cost_defer_count < self.cost_cap_max_defer:
                         condition = False
@@ -164,17 +215,32 @@ class Rule:
         return FiredDecision(asset, self.decision_year, self.build_year)
 
 
-# see docs/notes/Model/Decision_Rules.md#trend-projected-trigger-rationale
+# MAIN_LINK_BG_GEN_THRESHOLD is almost certainly a FORECAST justification,
+# not a real-time gate -- a plain trailing-mean trigger implements the
+# stricter reading; checked directly, that leaves Main Link firing at a mean
+# build year of 2041.8, 69% of the model horizon elapsed on average, vs the
+# real project's 2028 target. This trend-projected version fires when a
+# linear-trend PROJECTION of the observable is on track to cross threshold
+# within lookahead_years, rather than waiting for the trailing mean to have
+# already crossed it.
 TREND_WINDOW = 4               # trailing years for the trend fit -- longer than WINDOW(3), a slope estimate is noisier than a mean
 TREND_LOOKAHEAD_YEARS = 3      # fire if the trend-projected crossing is within this many years
 TREND_MIN_REAL_POINTS = 3      # minimum non-structural-zero points before fitting a trend at all
 
 
-# see docs/notes/Model/Decision_Rules.md#_trendprojectionmixin-design
+# A mixin, not a Rule subclass, so the SAME trend logic combines with either
+# Rule (-> TrendProjectedRule) or StagedLinkRule (-> TrendProjectedStagedLinkRule)
+# without duplicating it. First in the MRO so _condition_from_window
+# overrides the base class's trailing-mean one.
 class _TrendProjectionMixin:
     def _init_lookahead(self, lookahead_years=None, min_real_points=None):
         self.lookahead_years = TREND_LOOKAHEAD_YEARS if lookahead_years is None else lookahead_years
-        # see docs/notes/Model/Decision_Rules.md#_init_lookahead-fix-a-v2-min_real_points
+        # How many REAL (non-structural-zero) points must exist before the
+        # rule will even attempt a trend fit. Raising this (paired with a
+        # wider window) makes the rule wait for MORE realised years before it
+        # can project a crossing at all -- an information-driven delay, not
+        # an artificial calendar floor (contrast min_decision_year, which
+        # forces a wait regardless of what's been observed).
         self.min_real_points = TREND_MIN_REAL_POINTS if min_real_points is None else min_real_points
 
     def _condition_from_window(self, window_slice):
@@ -182,7 +248,10 @@ class _TrendProjectionMixin:
         now = years[-1]
         current_value = window_slice[-1]
 
-        # see docs/notes/Model/Decision_Rules.md#_condition_from_window-excluding-structural-zeros
+        # A 0.0 usually means the series hasn't started yet (e.g.
+        # background_gen_mw is genuinely 0 before DFES data begins in 2026),
+        # not a real data point at the origin -- a window straddling that
+        # boundary would fit a straight line across a kink.
         real = window_slice > 0
         if real.sum() < self.min_real_points:
             # Not enough real data yet to fit a trend -- fall back to the
@@ -195,7 +264,9 @@ class _TrendProjectionMixin:
 
         moving_toward_threshold = slope > 0 if self.direction == "above" else slope < 0
         if not moving_toward_threshold:
-            # see docs/notes/Model/Decision_Rules.md#_condition_from_window-flat-or-wrong-way-trend-fallback
+            # Flat/wrong-way trend -- no meaningful crossing time. Fall back
+            # to "is the current level already past threshold" rather than
+            # projecting nonsense.
             if self.direction == "below":
                 return current_value < self.threshold
             return current_value > self.threshold
@@ -205,14 +276,26 @@ class _TrendProjectionMixin:
         return years_until_crossing <= self.lookahead_years
 
 
-# see docs/notes/Model/Decision_Rules.md#trendprojectedrule-class-design
+# Trend-projected Main Link trigger. Only overrides _condition_from_window --
+# everything else (eligibility, prereq/max_defer/cost_cap gating, deadline,
+# firing) is inherited unchanged from Rule, a small surgical variant
+# (contrast StagedLinkRule, which needs a different asset_factory signature
+# and prereq mechanism and so duplicates the whole of maybe_fire).
 class TrendProjectedRule(_TrendProjectionMixin, Rule):
     def __init__(self, *args, lookahead_years=None, min_real_points=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._init_lookahead(lookahead_years, min_real_points)
 
 
-# see docs/notes/Model/Decision_Rules.md#stagedlinkrule-class-design
+# One stage of a rule-based staged interconnector build. Subclasses Rule so
+# Run_Strategy's isinstance sift still picks it up, but the eligibility/
+# firing logic is a self-contained copy of Rule's, not an extension. Two
+# differences from Rule: (1) prereq is a direct reference to the PREVIOUS
+# stage's StagedLinkRule, since every stage shares the same StagedLinkStage
+# class so a type-name string can't tell stages apart; (2) asset_factory is
+# called as asset_factory(build_year, state), so it can size this stage's
+# capex from state['capex_estimate'] at its own build year rather than a
+# fixed capex_mult baked in upfront.
 class StagedLinkRule(Rule):
     def __init__(self, name, window, threshold, prereq_rule, asset_factory,
                  lead, deadline, observable):
@@ -230,7 +313,9 @@ class StagedLinkRule(Rule):
         if self._prereq_rule is not None:
             if not self._prereq_rule.fired:
                 return False
-            # see docs/notes/Model/Decision_Rules.md#stagedlinkrule_eligible-full-trailing-window-requirement
+            # The FULL trailing window must sit after the prereq stage went
+            # live, not just the current year -- so "M consecutive years"
+            # only counts years this stage's own prereq was actually active.
             if Year - self.window + 1 < self._prereq_rule.build_year:
                 return False
         return True
@@ -259,28 +344,17 @@ class StagedLinkRule(Rule):
         return FiredDecision(asset, self.decision_year, self.build_year)
 
 
-# see docs/notes/Model/Decision_Rules.md#trendprojectedstagedlinkrule
+# StagedLinkRule stage using the trend-projected trigger instead of a
+# trailing-mean one -- used for Stage 1 when stage1_conditional=True, on the
+# same background_gen_mw signal Main Link's own TrendProjectedRule reads.
 class TrendProjectedStagedLinkRule(_TrendProjectionMixin, StagedLinkRule):
     def __init__(self, *args, lookahead_years=None, min_real_points=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._init_lookahead(lookahead_years, min_real_points)
 
 
-# see docs/notes/Model/Decision_Rules.md#rule-factories-design
-
-def make_stage2_wind_rule():
-    return Rule(
-        name="Stage 2 Wind",
-        observable="curtail_frac",
-        window=WINDOW,
-        threshold=STAGE2_WIND_CURTAIL_THRESHOLD,
-        direction="below",
-        asset_factory=lambda: Stage2_Wind_Buildout(),
-        lead=2,
-        deadline=2051,
-        prereq="Stage1_Wind_Buildout",
-    )
-
+# Factories, not pre-built instances: each call returns a fresh Rule/asset so
+# no state leaks between Monte Carlo draws or strategies.
 
 def make_extra_link_rule(capex_mult=1.0):
     return Rule(
@@ -296,7 +370,32 @@ def make_extra_link_rule(capex_mult=1.0):
     )
 
 
-# see docs/notes/Model/Decision_Rules.md#fix-b-npv-proxy-gate-design-and-assumptions
+# De-myopifies the cost-aware trigger: instead of screening on capex_mult
+# alone, compares a forward-only NPV PROXY -- discounted benefit of removing
+# TODAY's trailing congestion, projected flat for the remaining horizon,
+# against the capex the model would actually charge at the CURRENT noisy
+# estimate -- and only blocks the build if that proxy is negative.
+# Forward-only: reads only state already observed up to t_idx, no lookahead.
+#
+# Benefit per currently-curtailed MWh = CONSTRAINT_COST (spill cost avoided)
+# PLUS the trailing market/CfD price (what that MWh earns once deliverable
+# instead of spilled) -- not double-counting: today it earns £0 and costs
+# constraint_cost; once deliverable it earns price and costs nothing. An
+# earlier version priced constraint_cost only and never fired even at 50-65%
+# congestion, since £30-47m/yr of avoidance alone can't clear a ~£600m capex
+# bar -- adding the revenue term was a direct fix to that finding.
+#
+# ASSUMPTIONS, flagged: (1) "flat continuation" assumes today's trailing
+# congestion and price hold unchanged to horizon_deadline -- congestion
+# trends UP in every DFES scenario, so this UNDERSTATES future savings, a
+# bias AGAINST building; price has no such bias (mean-reverting). (2)
+# discount_rate/constraint_cost are DUPLICATED from System_Model's defaults
+# rather than imported, to avoid a circular import -- they will NOT track
+# set_rate()/CONSTRAINT_COST_SWEEP if changed elsewhere for a sensitivity
+# run. (3) Still a PROXY: treats ALL currently curtailed energy as becoming
+# deliverable, which overstates benefit if new capacity wouldn't clear 100%
+# of today's spill, and ignores opex/CFD-lifetime timing -- directionally
+# sound, not exact.
 NPV_GATE_DISCOUNT_RATE = 0.035
 NPV_GATE_CONSTRAINT_COST = 55 * REBASE_2018_TO_2023
 NPV_GATE_HORIZON_DEADLINE = 2051
@@ -331,7 +430,34 @@ def make_main_link_rule(capex_mult=1.0, cost_cap=None,
                          observable=None, trend_window=None, lookahead_years=None,
                          min_decision_year=None, min_real_points=None,
                          cost_cap_max_defer=None, gate_mode="capex_screen", npv_margin=0.0):
-    # see docs/notes/Model/Decision_Rules.md#make_main_link_rule-headline-design-and-fix-ab-knobs
+    # Headline: fires when background_gen_mw is trend-projected to cross
+    # threshold within TREND_LOOKAHEAD_YEARS -- anticipates the crossing
+    # rather than waiting for it to have already happened, matching how the
+    # real 135MW condition was almost certainly actually used (a forecast
+    # justification, not a real-time gate). No max_defer -- never firing is
+    # a valid EOA-at-2019 result, not a bug.
+    #
+    # cost_cap=None (default) reproduces the headline demand-only trigger
+    # exactly. Passing a value adds the cost_cap AND-gate on TOP OF the same
+    # trend-projected demand trigger -- defers a demand-justified build if
+    # the noisy early capex_mult estimate looks like an overrun -- so
+    # cost-aware strategies can be compared against demand-only ones on an
+    # identical demand trigger, isolating cost-awareness's own marginal effect.
+    #
+    # Fix A knobs (all default None -> behaviour above): trend_window
+    # overrides TREND_WINDOW; min_decision_year is an artificial calendar
+    # floor, checked directly and found COUNTERPRODUCTIVE (collapses the
+    # build-year distribution to the floor since the trend condition is
+    # typically already satisfied before it, pure delay cost, no option
+    # value) -- kept as a toggle, not recommended; min_real_points is the one
+    # actually worth using, an information-driven delay (see
+    # _TrendProjectionMixin._init_lookahead).
+    #
+    # Fix B knobs (default to today's plain cost_cap screen):
+    # cost_cap_max_defer is a force-fire ceiling on years blocked BY cost_cap
+    # specifically; gate_mode is "capex_screen" (default) or "npv_proxy"
+    # (make_npv_gate replaces the screen entirely -- cost_cap is ignored,
+    # npv_margin is the threshold instead).
     if observable is None:
         observable = "background_gen_mw"
     if observable not in MAIN_LINK_OBSERVABLES:
@@ -343,7 +469,9 @@ def make_main_link_rule(capex_mult=1.0, cost_cap=None,
     effective_cost_cap = cost_cap
     extra_gate = None
     if gate_mode == "npv_proxy":
-        # see docs/notes/Model/Decision_Rules.md#make_main_link_rule-npv_proxy-replaces-cost_cap-screen
+        # Replaces the plain screen rather than stacking with it -- the
+        # whole point is comparing against a benefit estimate instead of a
+        # bare cost ceiling. cost_cap (if passed) is ignored in this mode.
         effective_cost_cap = None
         extra_gate = make_npv_gate(NewLink(1.0).Capex(), margin=npv_margin)
 
@@ -386,7 +514,13 @@ def make_main_link_rule_mandated(capex_mult=1.0, max_defer=5):
 def make_main_link_rule_cost_aware(capex_mult=1.0, cost_cap=2.0,
                                     min_decision_year=None, cost_cap_max_defer=None,
                                     gate_mode="capex_screen", npv_margin=0.0):
-    # see docs/notes/Model/Decision_Rules.md#make_main_link_rule_cost_aware-design
+    # Fires only if background_gen_mw exceeds threshold AND the capex_mult
+    # estimate is <= cost_cap -- defers a congestion-justified build if the
+    # cost estimate looks like an overrun. No max_defer, same reasoning as
+    # the headline. This is the earlier plain trailing-mean variant, kept
+    # for its own self-test (not the one System_Model._flexible_cost_aware
+    # calls, which uses make_main_link_rule's trend-projected trigger
+    # instead) -- given the same Fix A/B knobs for consistency.
     assert gate_mode in ("capex_screen", "npv_proxy"), gate_mode
     effective_cost_cap = cost_cap
     extra_gate = None
@@ -410,41 +544,19 @@ def make_main_link_rule_cost_aware(capex_mult=1.0, cost_cap=2.0,
     )
 
 
-def make_stage1_wind_gated_rule(prereq="NewLink"):
-    # see docs/notes/Model/Decision_Rules.md#make_stage1_wind_gated_rule-design
-    return Rule(
-        name="Stage1 Wind",
-        observable="delivered",
-        window=1,
-        threshold=-1.0,
-        direction="above",
-        asset_factory=lambda: Stage1_Wind_Buildout(),
-        lead=1,
-        deadline=2051,
-        prereq=prereq,
-    )
-
-
-def make_stage2_wind_gated_rule(prereq="NewLink"):
-    # Same as make_stage1_wind_gated_rule, lead=2 to preserve Stage1/Stage2
-    # spacing -- keyed off NewLink directly, not chained off Stage 1.
-    return Rule(
-        name="Stage2 Wind",
-        observable="delivered",
-        window=1,
-        threshold=-1.0,
-        direction="above",
-        asset_factory=lambda: Stage2_Wind_Buildout(),
-        lead=2,
-        deadline=2051,
-        prereq=prereq,
-    )
-
-
-# see docs/notes/Model/Decision_Rules.md#make_staged_link_strategy-design
+# Rule-based staged interconnector -- the phased-deployment design
+# alternative to a single fixed-year block, evaluated against it the same
+# way [3] compares phased against fixed PV capacity deployment. Stage 1
+# gates on background_gen_mw like Main Link via TrendProjectedRule (an
+# unconditional fixed year is still available via stage1_conditional=False).
+# Each later stage is a StagedLinkRule gated on (a) the previous stage being
+# live and (b) total generation exceeding a threshold scaled from
+# MAIN_LINK_BG_GEN_THRESHOLD by that stage's cumulative share of 220MW, for
+# M consecutive years (theta multiplies that scaled threshold, 1.0 = exact
+# proportional scaling). Stages build in strict order; returns a flat list
+# of StagedLinkRule instances, Options-list compatible.
 def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditional=True,
-                               fixed_per_stage=None, base_permw=None,
-                               learning_mode=None, learning_param=None,
+                               fixed_per_stage=None, base_permw=None, learning_param=None,
                                theta=None, M=None, lead=None, deadline=None):
     if stage_sizes is None:
         stage_sizes = STAGED_LINK_STAGE_SIZES_DEFAULT
@@ -454,8 +566,6 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
         fixed_per_stage = STAGED_LINK_FIXED_PER_STAGE
     if base_permw is None:
         base_permw = STAGED_LINK_BASE_PERMW
-    if learning_mode is None:
-        learning_mode = STAGED_LINK_LEARNING_MODE_DEFAULT
     if theta is None:
         theta = STAGED_LINK_THETA
     if M is None:
@@ -468,7 +578,10 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
     total_mw = sum(stage_sizes)
     assert total_mw > 0 and all(mw > 0 for mw in stage_sizes), (
         f"stage_sizes must be a list of positive MW values, got {stage_sizes}")
-    # see docs/notes/Model/Decision_Rules.md#make_staged_link_strategy-total_mw-note
+    # total_mw need NOT equal NewLink's 220MW -- it's whatever this
+    # strategy's own stage_sizes sum to. The threshold scaling below uses
+    # total_mw itself, not a hardcoded 220, so "each stage's cumulative
+    # share of the total" stays correct regardless of what that total is.
 
     rules = []
     prev_rule = None
@@ -476,11 +589,12 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
     for n, mw in enumerate(stage_sizes, start=1):
         variable_permw = stage_variable_permw(n, cum_mw_before, stage_sizes,
                                                base_permw=base_permw,
-                                               mode=learning_mode,
                                                learning_param=learning_param)
 
         def _asset_factory(build_year, state, _mw=mw, _vpermw=variable_permw):
-            # see docs/notes/Model/Decision_Rules.md#_asset_factory-realised-capex-multiplier
+            # Realised capex multiplier for THIS stage = the noisy early
+            # estimate at ITS OWN build year -- reused, not redrawn; deferred
+            # stages inherit the sharpened, lower-variance estimate.
             stage_capex_mult = state["capex_estimate"][build_year - 2019]
             return StagedLinkStage(_mw, fixed_per_stage, _vpermw, stage_capex_mult)
 
@@ -498,7 +612,8 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
                     observable="background_gen_mw",
                 )
             else:
-                # see docs/notes/Model/Decision_Rules.md#make_staged_link_strategy-unconditional-stage-1-fallback
+                # Unconditional fixed-year build -- dummy always-true
+                # condition on "delivered" (always >=0, always computed).
                 rule = StagedLinkRule(
                     name="Staged Link Stage 1",
                     window=1, threshold=-1.0,
@@ -509,7 +624,12 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
                     observable="delivered",
                 )
         else:
-            # see docs/notes/Model/Decision_Rules.md#make_staged_link_strategy-ofgem-style-threshold-scaling
+            # Ofgem-style total-generation threshold: MAIN_LINK_BG_GEN_THRESHOLD
+            # scaled by this stage's cumulative share of THIS STRATEGY'S OWN
+            # total_mw (not a hardcoded 220), then adjusted by theta. For the
+            # default 220MW stage_sizes this is identical to the original
+            # hardcoded behaviour; for a scaled variant the last stage still
+            # reaches exactly 135*theta once 100% of its own total is built.
             cum_mw_after = cum_mw_before + mw
             bg_threshold = MAIN_LINK_BG_GEN_THRESHOLD * (cum_mw_after / total_mw) * theta
             rule = StagedLinkRule(
@@ -529,7 +649,10 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
 
 
 if __name__ == "__main__":
-    # see docs/notes/Model/Decision_Rules.md#__main__-self-test-overview
+    # Self-contained unit tests: synthetic state, no System_Model dependency.
+    # Verifies lead-time accounting (CapexYear=decision year, BuildYear=
+    # decision year+lead, charged at BuildYear to match rigid Decisions),
+    # deadline enforcement, max_defer, prereq gating, no-lookahead.
     import numpy as np
 
     def make_state(n_years, **series):
@@ -604,7 +727,9 @@ if __name__ == "__main__":
 
     # 6. no-lookahead: repeated calls at increasing t never raise the
     # out-of-bounds assert inside maybe_fire
-    r_look = make_stage2_wind_rule()
+    r_look = Rule(name="lookahead-test", observable="curtail_frac", window=WINDOW,
+                  threshold=0.10, direction="below", asset_factory=lambda: NewLink(),
+                  lead=2, deadline=2051)
     n2 = 8
     state5 = make_state(n2, curtail_frac=np.linspace(0.5, 0.01, n2))
     for t in range(n2):

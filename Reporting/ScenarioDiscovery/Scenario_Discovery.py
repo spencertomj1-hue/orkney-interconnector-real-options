@@ -1,4 +1,20 @@
-# PRIM scenario-discovery pipeline: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#overview
+# Standalone PRIM (Patient Rule Induction Method) scenario discovery over the
+# headline Monte Carlo draws. Run this BY HAND, after Results.py has been run
+# once with System_Model.SCENARIO_DISCOVERY=True, so mc_draws.csv exists.
+# Never imported by System_Model.py or Results.py -- the core model must
+# never depend on ema_workbench, and it doesn't; this file is the sole
+# consumer of that PRIM dependency.
+#
+# PRIM background: given an input matrix X (uncertain scenario parameters)
+# and a binary outcome y (1="loss"), PRIM iteratively shrinks ("peels") a box
+# around the data, each step removing whichever slice raises the box's
+# DENSITY (fraction of in-box points that are y=1) the most. As the box
+# shrinks, its COVERAGE (fraction of all y=1 points captured) falls -- that
+# trade-off, traced step by step, is the "peeling trajectory". The final
+# box's bounds are the result: e.g. "loss concentrates where capex_mult>2.1
+# AND scenario==Falling Behind". Friedman & Fisher (1999) is the original
+# algorithm; Bryant & Lempert (2010) is the exploratory-modelling application
+# (Robust Decision Making) that ema_workbench.analysis.prim implements.
 
 import os
 import numpy as np
@@ -17,7 +33,10 @@ OUTCOME = "npv_below_zero"          # default: loss = NPV < 0
 # alt: "worse_than_do_nothing"      # loss = NPV_strategy - NPV_do_nothing < 0
 # alt: "lcoe_above_threshold"       # loss = incremental LCOE vs Do Nothing > LCOE_FAIL_THRESHOLD
 
-# LCOE_FAIL_THRESHOLD cutoff rationale: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#lcoe_fail_threshold-cutoff-rationale
+# £/MWh cutoff for the lcoe_above_threshold OUTCOME -- a cost-of-energy fail
+# criterion rather than an NPV one, so it can surface a different loss region
+# (e.g. a strategy might stay NPV-positive on average while still clearing a
+# high per-MWh cost bar on the same draws). Illustrative, not fitted.
 LCOE_FAIL_THRESHOLD = 80.0
 
 # Human-readable form of OUTCOME for chart titles, so titles show "NPV < £0"
@@ -29,7 +48,11 @@ OUTCOME_DISPLAY = {
     "regret": "regret vs best of the 4 build strategies (excl. Do Nothing)",
 }
 
-# STRATEGY_TO_COL: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#strategy_to_col-strategy-selection-and-column-naming-convention
+# The 4 headline strategies plus Flexible 1-Stage (Cost-Aware) as a 5th (Do
+# Nothing is the reference for worse_than_do_nothing/lcoe_above_threshold,
+# not looped here). Column names must match Results.py's own derivation
+# exactly ("npv_" + sname.lower().replace(" ", "_").replace("-", "_")) --
+# confirmed directly against mc_draws.csv's actual header, not guessed.
 STRATEGY_TO_COL = {
     "Baseline": "npv_baseline",
     "Fixed 4-Stage": "npv_fixed_4_stage",
@@ -38,7 +61,8 @@ STRATEGY_TO_COL = {
     "Flexible 1-Stage (Cost-Aware)": "npv_flexible_1_stage_(cost_aware)",
 }
 
-# STRATEGY_TO_LCOE_COL: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#strategy_to_lcoe_col
+# Same strategies, pointed at Results.py's per-draw incremental-LCOE columns
+# instead of NPV -- used only when OUTCOME="lcoe_above_threshold".
 STRATEGY_TO_LCOE_COL = {
     "Baseline": "lcoe_baseline",
     "Fixed 4-Stage": "lcoe_fixed_4_stage",
@@ -48,19 +72,36 @@ STRATEGY_TO_LCOE_COL = {
 }
 
 
-# strategy_col_map rationale: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#strategy_col_map-why-a-function-not-a-constant
+# Kept as a function (not a module-level constant) so it re-reads OUTCOME if
+# that's changed after import, same as OUTCOME_DISPLAY.get(OUTCOME, ...) elsewhere.
 def strategy_col_map():
     return STRATEGY_TO_LCOE_COL if OUTCOME == "lcoe_above_threshold" else STRATEGY_TO_COL
 
-# PRIM parameter defaults: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#peel_alpha-paste_alpha-mass_min-prim-parameter-defaults
+# Passed straight through to ema_workbench.analysis.prim.Prim -- these are its
+# own default values, named here so they're visible and easy to tune without
+# digging into the library. PEEL_ALPHA: fraction of in-box points considered
+# for removal at each peeling step. PASTE_ALPHA: fraction considered for
+# re-addition in PRIM's pasting phase (undoes an overly greedy peel).
+# MASS_MIN: peeling stops once the box would hold less than this fraction of
+# all draws.
 PEEL_ALPHA = 0.05
 PASTE_ALPHA = 0.05
 MASS_MIN = 0.05
 
-# PAIRED_DRAWS: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#paired_draws
+# Draws are paired across strategies (all strategies in one run_marginalised()
+# call share the same draw index -- same capex_mult/scenario/weather/GBM
+# shocks). Set here as a constant, not re-derived from the CSV, since the CSV
+# alone can't prove pairing -- it reflects a fact about how Results.py
+# produced it. If that MC loop is ever changed to draw independently per
+# strategy, this must be flipped to False by hand.
 PAIRED_DRAWS = True
 
-# NEVER_CROSSED_YEAR_SENTINEL: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#never_crossed_year_sentinel
+# year_bg135_raw_crossed is NaN for draws where background generation never
+# raw-crosses 135MW within the model horizon. PRIM can't handle NaN, so it's
+# filled with a fixed after-horizon sentinel (treated as "later than every
+# real crossing year") rather than dropping the column or the rows.
+# Hardcoded rather than imported from System_Model.YEARS, to keep this file
+# fully standalone -- if the model horizon ever changes, update by hand.
 NEVER_CROSSED_YEAR_SENTINEL = 2052
 
 # DROP_TRIGGER_DRIVERS: year_bg135_raw_crossed and background_terminal_mw are
@@ -90,7 +131,15 @@ def load_data():
     return pd.read_csv(MC_DRAWS_CSV)
 
 
-# prepare_inputs categorical handling: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#prepare_inputs-categorical-handling-of-the-scenario-dimension
+# The DFES scenario dimension is categorical. ema_workbench's Prim supports a
+# categorical column NATIVELY -- given dtype "category" it peels by removing
+# one category at a time (set-membership, e.g. scen:{A}) rather than
+# continuous quantile peeling. Cast explicitly rather than relying on
+# implicit string/object auto-detection. Simpler and more interpretable than
+# one-hot dummies (no risk of PRIM fixing collinear dummy columns to
+# contradictory values), and is what the library's PRIM is actually built to
+# do -- not run-PRIM-once-per-scenario, which would fragment the ~2000 draws
+# into 4 much smaller, noisier sub-ensembles.
 def prepare_inputs(df):
     continuous_cols = ["capex_mult", "wind_cf_proxy_mean", "capex_estimate_year0",
                         "demand_terminal_gwh", "price_terminal_gbp_mwh",
@@ -109,7 +158,10 @@ def compute_loss_flag(df, value_col, outcome):
     if outcome == "worse_than_do_nothing":
         return ((df[value_col] - df["npv_do_nothing"]) < 0).astype(int)
     if outcome == "lcoe_above_threshold":
-        # NaN handling under lcoe_above_threshold: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#compute_loss_flag-nan-handling-under-lcoe_above_threshold
+        # NaN entries (dE~0, or a "dominates" draw -- see Results.py's
+        # lcoe_from_stores) compare False under >, i.e. NOT a high-LCOE
+        # failure -- correct, since a dominates draw is strictly better than
+        # Do Nothing, not a cost-per-unit figure at all.
         return (df[value_col] > LCOE_FAIL_THRESHOLD).astype(int)
     raise ValueError(f"unknown OUTCOME {outcome!r}")
 
@@ -194,7 +246,13 @@ def run_regret_prim_for_strategy(name, value_col, df, X):
     return box
 
 
-# save_trajectory plot choices: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#save_trajectory-plot-choices
+# Trajectory CSV + 2 plots, both ema_workbench's own built-in visualisations
+# (not hand-rolled): show_tradeoff() is the standard PRIM coverage-vs-density
+# curve, one point per peeling step, so you can see the whole trade-off, not
+# just the final box's stats; inspect(..., style="graph") draws the FINAL
+# box's own bounds as bars against the full data range per dimension, given
+# its own fig/ax since the default figsize truncates dimension-name labels
+# when 5+ dimensions are restricted (several boxes here have that many).
 def save_trajectory(name, box):
     slug = name.lower().replace(" ", "_")
     traj_df = box.peeling_trajectory
@@ -219,7 +277,11 @@ def save_trajectory(name, box):
     return csv_path, tradeoff_png_path, box_png_path
 
 
-# box_bounds_dict box_lims structure: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#box_bounds_dict-box_lims-structure-and-restricted-definition
+# box.box_lims[-1] is a DataFrame, index [min, max], one column per input
+# dimension. The categorical "scenario" column stores both rows as the SAME
+# set of allowed categories, so .iloc[0] alone is enough to read it.
+# "Restricted" means this dimension's bounds are narrower than the FULL data
+# range it started at (box_lims of trajectory step 0).
 def box_bounds_dict(box):
     full = box.box_lims[0]
     final = box.box_lims[-1]
@@ -236,14 +298,33 @@ def box_bounds_dict(box):
     return bounds
 
 
-# Cross-strategy comparison figure design & colour choices: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#cross-strategy-comparison-figure-design-and-colour-choices
+# One panel per dimension, each on its own real-unit LINEAR x-axis (not a
+# shared 0-1 "position within range" axis -- a reader has no intuition for
+# what "0.4" means on an axis mixing capex multiples, £/MWh and years). No
+# log-scaled axes anywhere, by explicit request -- a dimension with a very
+# wide full range can render a tightly-restricted box as a thin sliver near
+# the low end; that's a consequence of the choice, not an oversight.
+# ema_workbench has no built-in "compare N separate Prim() runs" plot (its
+# own multi-box tools compare SEQUENTIAL boxes from one Prim run on one y,
+# not separate runs on different strategies), so this figure is hand-rolled,
+# but it only lays out numbers ema_workbench already computed (box_lims).
+# Colours are the first 4 slots of this project's validated categorical
+# palette, fixed order.
 STRATEGY_COLORS_HEX = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#9b59b6"]   # blue, orange, aqua, yellow, purple
 CHART_INK = "#0b0b0b"
 CHART_INK_MUTED = "#898781"
 CHART_GRIDLINE = "#e1e0d9"
 CHART_SURFACE = "#fcfcfb"
 
-# COMPARISON_PLOT_EXCLUDE_DIMS rationale: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#comparison_plot_exclude_dims-why-these-dimensions-are-dropped
+# Dimensions never shown on this comparison figure, even if some strategy's
+# box restricts them -- still a legitimate PRIM input everywhere else
+# (mc_draws.csv, prepare_inputs(), each strategy's own box_graph_*.png,
+# box_summary.csv). Excluded only because they clutter this combined view,
+# per explicit request -- not a claim they're uninformative.
+# price_terminal_gbp_mwh specifically: its full range spans four orders of
+# magnitude, so on this figure's strictly-linear axes every strategy's box
+# would collapse to an unreadable sliver at x=0 -- dropped rather than shown
+# broken (log scale would fix it but was explicitly ruled out).
 COMPARISON_PLOT_EXCLUDE_DIMS = {"capex_estimate_year0", "price_terminal_gbp_mwh", "wind_cf_proxy_mean"}
 
 # Column name -> (display label, unit suffix for value labels).
@@ -273,7 +354,13 @@ def _fmt_value(v, unit, dim=None):
     return f"{v:.4g}{unit}"
 
 
-# dims parameter semantics: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#plot_cross_strategy_comparison-dims-parameter-semantics
+# dims=None (default): auto-select every dimension restricted by at least one
+# strategy's box, minus COMPARISON_PLOT_EXCLUDE_DIMS, most-restricted-by
+# first -- the full "where does each strategy lose money" survey. Pass an
+# explicit dims list to instead render exactly those dimensions, in that
+# order, regardless of whether every strategy's box actually restricts them
+# -- a focused variant for a specific pair/subset. out_name lets a focused
+# call avoid overwriting the full comparison's output file.
 def plot_cross_strategy_comparison(boxes, dims=None, out_name="cross_strategy_comparison"):
     strategy_names = list(boxes.keys())
     n_strat = len(strategy_names)
@@ -299,7 +386,9 @@ def plot_cross_strategy_comparison(boxes, dims=None, out_name="cross_strategy_co
         is_categorical = isinstance(ref_full[dim].iloc[0], (set, frozenset))
 
         if is_categorical:
-            # categorical dimension rendering: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#categorical-dimension-rendering-in-plot_cross_strategy_comparison
+            # Set-membership restriction, not a numeric range -- printed as
+            # text per strategy rather than a bar (position on an axis has
+            # no meaning for a category).
             ax.axis("off")
             ax.set_title(label, loc="left", fontsize=10, color=CHART_INK, fontweight="bold")
             lines = []
@@ -314,7 +403,8 @@ def plot_cross_strategy_comparison(boxes, dims=None, out_name="cross_strategy_co
 
         full_lo, full_hi = float(ref_full[dim].iloc[0]), float(ref_full[dim].iloc[1])
 
-        # full-range reference band: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#full-range-reference-band-in-plot_cross_strategy_comparison
+        # Full-range reference band, neutral grey (context, not a per-strategy
+        # colour), drawn once behind every bar.
         ax.barh(0, full_hi - full_lo, left=full_lo, height=bar_h * (n_strat + 0.6),
                 color=CHART_GRIDLINE, zorder=1)
 
@@ -661,7 +751,9 @@ if __name__ == "__main__":
             for name, b in box_bounds.items():
                 bound = b.get(dim, "(unrestricted)")
                 print(f"    {name:<18} {bound}")
-        # excluding Flexible 1-Stage (Cost-Aware) from the charts: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#cross-strategy-comparison-excluding-flexible-1-stage-cost-aware-from-the-charts
+        # Charts only drop Cost-Aware (prints/box_summary.csv above keep it,
+        # and its own single-strategy box_graph/peeling-trajectory outputs
+        # are untouched -- this exclusion is for the shared comparison chart only).
         # also excluding any strategy whose box is diffuse (density < NO_BOX_DENSITY_THRESHOLD) --
         # its bounds are already null in box_summary.csv, so there's nothing meaningful to bar-chart.
         plot_boxes = {name: box for name, box in boxes.items()
@@ -671,7 +763,9 @@ if __name__ == "__main__":
         if comparison_png_path:
             print(f"\nCross-strategy comparison plot -> {comparison_png_path}")
 
-        # focused demand/bg135 comparison variant: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#focused-comparison-variant-demand-and-bg135-crossing-year
+        # Focused 2-panel variant of the same figure -- demand and the
+        # bg135-crossing year only, for a reader who wants just those two
+        # rather than the full dimension survey above.
         demand_bg135_png_path = plot_cross_strategy_comparison(
             plot_boxes, dims=["demand_terminal_gwh", "year_bg135_raw_crossed"],
             out_name="cross_strategy_comparison_demand_bg135")

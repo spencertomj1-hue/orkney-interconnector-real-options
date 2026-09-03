@@ -10,7 +10,12 @@ LIFETIMES = {"Link": 40, "Generation": 25}   # years
 REPD_WIND_VINTAGES_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
                             "Methodology_4/Coding/Inputs/Data/Generation/orkney_existing_wind_vintages.csv")
 
-# Existing link OpEx estimate: see docs/notes/Model/Model_Components.md#existing-link-opex-estimation-method
+# No published SHEPD/Ofgem OpEx actual exists for these specific cables, so
+# this is an estimate: Method B (conductor losses + Method A's %-of-capex
+# fixed-O&M proxy + an annualised fault-repair provision), at the sourced
+# 2017 base throughput and the £70/MWh midpoint of the assumed £60-80/MWh
+# loss-price range. Computed live from orkney_link_opex.py rather than pasted
+# as a literal, so it can't drift out of sync with its own derivation.
 _, _EXISTING_LINK_FIXED_OPEX = method_a_fixed_opex()
 EXISTING_LINK_OPEX_GBP_PER_YEAR = method_b_total(
     ANNUAL_THROUGHPUT_GWH_BASE, 70, _EXISTING_LINK_FIXED_OPEX)["total"]
@@ -67,7 +72,10 @@ class Existing_PV:
 
 
 
-# REPD existing wind vintages: see docs/notes/Model/Model_Components.md#existing-wind-fleet-repd-vintages
+# REPD gives 8 real commission years (2000-2014), staggered retirement
+# 2025-2039 rather than a single 2035 cliff. Real ~39.2MW total vs the old
+# 52.239MW regional-stats figure -- the ~25% gap is real pre-2019
+# decommissioning (Spurness Wind Farm), not a rescaling.
 def _load_wind_vintages():
     rows = []
     with open(REPD_WIND_VINTAGES_PATH, newline="") as f:
@@ -77,7 +85,9 @@ def _load_wind_vintages():
 
 EXISTING_FLEET = _load_wind_vintages() + [(Existing_PV(), 2015)]   # PV year: placeholder, no REPD solar entries for Orkney
 
-# EXISTING_FLEET_NAMEPLATE purpose: see docs/notes/Model/Model_Components.md#existing_fleet_nameplate-purpose
+# Original nameplate by type, regardless of vintage/lifetime -- lets
+# System_Model's DFES block permanently remove the existing fleet from
+# background generation without a separately hardcoded figure.
 EXISTING_FLEET_NAMEPLATE = {}
 for _asset, _commission_year in EXISTING_FLEET:
     _type = _asset.Type()

@@ -1,4 +1,9 @@
-# Regenerates the mc_draws.csv cache replay: see docs/notes/Reporting/ScenarioDiscovery/ScenarioDiscovery_Regenerate.md#overview
+# Regenerates Extra/ScenarioDiscovery/mc_draws.csv by replaying the cached
+# seed=42, N=2000 draws (no resampling) through the current strategy code --
+# mirrors Results.py's SCENARIO_DISCOVERY-gated capture block line for line,
+# just fed from the cache's stored draws instead of a fresh run_marginalised()
+# call. Run Scenario_Discovery.py after this to redo the PRIM analysis
+# against the refreshed CSV.
 
 import pickle
 import os
@@ -6,13 +11,15 @@ import sys
 import numpy as np
 import pandas as pd
 
-# sys.path setup: see docs/notes/Reporting/ScenarioDiscovery/ScenarioDiscovery_Regenerate.md#syspath-setup-rationale
+# Lives in Reporting/ScenarioDiscovery/ -- put Coding/ (2 levels up) back on
+# sys.path so the package-qualified imports below resolve regardless of
+# invocation cwd.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 import Model.System_Model as M
 from Model.System_Model import Run_Strategy, Scenarios, Strategies_2, Strategies_Flex
 from Model.Model_Components import Decision
-from Model.Options import NewLink, Stage1_Wind_Buildout, Stage2_Wind_Buildout
+from Model.Options import NewLink
 from Model.Decision_Rules import MAIN_LINK_BG_GEN_THRESHOLD as _BG_THRESH
 
 MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
@@ -26,9 +33,10 @@ def _check_cache_provenance(cache, path):
         raise RuntimeError(
             f"{path} has no provenance metadata (written before this guard existed) -- "
             "regenerate it (or re-stamp it) before trusting its marg_store/marg_cost/marg_energy.")
+    # no model flags tracked here currently (wind-as-option removed) -- kept
+    # as an empty tuple so future flags can be added without restructuring.
     mismatches = [f"{k}: cache={meta[k]!r} vs current={cur!r}"
-                  for k, cur in (("INCLUDE_WIND_BUILDOUT", M.INCLUDE_WIND_BUILDOUT),
-                                 ("WIND_AS_OPTION", M.WIND_AS_OPTION))
+                  for k, cur in ()
                   if meta[k] != cur]
     if mismatches:
         raise RuntimeError(
@@ -36,8 +44,6 @@ def _check_cache_provenance(cache, path):
             f"regenerate the cache before trusting it: " + "; ".join(mismatches))
 
 _check_cache_provenance(_CACHE, MC_CACHE_PATH)
-print(f"INCLUDE_WIND_BUILDOUT={M.INCLUDE_WIND_BUILDOUT}, WIND_AS_OPTION={M.WIND_AS_OPTION} "
-      "(current headline default, unchanged by this script)")
 
 N = _CACHE["n"]
 assert N == 2000 and _CACHE["seed"] == 42
@@ -55,14 +61,14 @@ def _paths_from_stored_z(z, scenario):
     return demand, price_seq, background_seq
 
 def _do_nothing(capex_mult=1.0):
-    return [Decision(NewLink(capex_mult), None),
-            Decision(Stage1_Wind_Buildout(), None),
-            Decision(Stage2_Wind_Buildout(), None)]
+    return [Decision(NewLink(capex_mult), None)]
 
 ALL_STRATEGIES = {"Do Nothing": _do_nothing, **Strategies_2, **Strategies_Flex}
 print("strategies:", list(ALL_STRATEGIES.keys()))
 
-# Replay rationale: see docs/notes/Reporting/ScenarioDiscovery/ScenarioDiscovery_Regenerate.md#replay-recomputing-marg_store-marg_cost-marg_energy-under-current-defaults
+# Recomputed fresh under current strategy defaults rather than read back from
+# the cache, so a code change to e.g. a strategy's gate_mode is reflected here
+# even though the underlying random draws are replayed unchanged.
 marg_store = {sname: np.empty(N) for sname in ALL_STRATEGIES}
 marg_cost = {sname: np.empty(N) for sname in ALL_STRATEGIES}
 marg_energy = {sname: np.empty(N) for sname in ALL_STRATEGIES}

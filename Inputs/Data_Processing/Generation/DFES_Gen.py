@@ -1,10 +1,13 @@
-"""See docs/notes/Inputs/Data_Processing/Generation/DFES_Gen.md#overview for full description."""
+"""Builds the DFES background-generation pipeline per scenario, MW, excluding
+non-export plant and the assets already modelled as Decisions elsewhere."""
 
 import pandas as pd
 
 PATH = "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Methodology_4/Coding/Inputs/Data/DFES/2025_DFES_Projections.csv"
 
-# Why excluded: see docs/notes/Inputs/Data_Processing/Generation/DFES_Gen.md#why-backup-plant-and-storage-are-excluded
+# Backup/standby plant doesn't run continuously or compete for link capacity
+# (including it manufactures curtailment); battery storage is absorption, not
+# supply, and is handled separately alongside electrolysis.
 EXCLUDE = [
     "Diesel",
     "Gas",
@@ -12,7 +15,10 @@ EXCLUDE = [
     "Battery storage",
 ]
 
-# Sourcing WIND_OPERATIONAL: see docs/notes/Inputs/Data_Processing/Generation/DFES_Gen.md#sourcing-wind_operational
+# Orkney operational onshore wind, MW. Should be sourced from the DESNZ REPD
+# or SSEN's connected-generation register -- DFES can't supply this, since its
+# 2026 onshore wind figure differs by scenario (119.3 vs 54.5 MW), meaning
+# that figure already includes pipeline projects, not just operational plant.
 WIND_OPERATIONAL = 52.239
 
 # Assets modelled as Decisions in System_Model, MW. Removed from the pipeline

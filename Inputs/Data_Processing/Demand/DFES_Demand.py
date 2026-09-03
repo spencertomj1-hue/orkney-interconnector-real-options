@@ -1,17 +1,31 @@
-"""See docs/notes/Inputs/Data_Processing/Demand/DFES_Demand.md#overview for full description."""
+"""DFES 2025 (SHEPD) Orkney demand increments, converted from technology
+counts to annual energy (GWh), relative to 2026. Output is a DELTA on the
+metered baseline, not total demand -- the 2026 stock is already contained in
+the ANM measured demand, so only increments are added."""
 
 import pandas as pd
 
 PATH = "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Methodology_4/Coding/Inputs/Data/DFES/2025_DFES_Projections.csv"
 
-# EV energy factors: see docs/notes/Inputs/Data_Processing/Demand/DFES_Demand.md#ev-energy-factors
+# Car factor is derived, not assumed: miles/car/yr = Orkney car vehicle-miles
+# (DfT road traffic statistics, LA level, 2022-25 mean) / Orkney licensed cars
+# (DfT VEH0105, 2026 Q1, 11,400); kWh/mile = 21 kWh/100km real-world across
+# 342 European BEVs (Bhatti et al., Sustainability 16(17):7529, 2024); charge
+# eff. grosses up for charging losses since ANM measures grid-side.
 MILES_PER_CAR = 5520
 KWH_PER_MILE  = 0.338     # sensitivity: 0.27 / 0.338 / 0.40 (paper's +/-4)
 CHARGE_EFF    = 0.90
 
 KWH_PER_CAR = MILES_PER_CAR * KWH_PER_MILE / CHARGE_EFF
 
-# Vehicle category multipliers: see docs/notes/Inputs/Data_Processing/Demand/DFES_Demand.md#vehicle-category-multipliers
+# Other categories expressed as multiples of the car factor. The LGV
+# multiplier is INDICATIVE and unsourced -- the traffic data can't separate
+# LGV mileage, it only splits cars_and_taxis vs all_motor_vehicles. HGVs and
+# buses are excluded entirely: DFES projects 288 electric HGVs and 172
+# electric buses on Orkney by 2040 against total licensed fleets of only
+# ~200 and ~100 respectively (VEH0105, 2026 Q1) -- both exceed the entire
+# existing fleet, so DFES's local allocation doesn't reflect actual Orkney
+# stock. Quantified separately as a sensitivity below instead.
 MULT = {
     "Off-street cars":  1.00,
     "On-street cars":   1.00,
@@ -20,7 +34,8 @@ MULT = {
     "Motorcycles":      0.15,   # negligible either way
 }
 
-# Heating factors: see docs/notes/Inputs/Data_Processing/Demand/DFES_Demand.md#heating-factors
+# Calibrated against island-wide heating energy from the HDD model, so the
+# DFES unit definition cancels out: N_resist*x + N_hp*(x/SPF) = total heating energy.
 SPF_H4        = 2.78      # EoH SPF_H4 median, n=428. Sensitivity: 2.55 / 3.05
 C_MWH_PER_HDD = 23.556    # own HDD model, base 13C, MWh/day per HDD
 ANNUAL_HDD    = 1681      # Kirkwall, mean over full-12-month years
@@ -91,7 +106,10 @@ split = pd.DataFrame({
 })
 print(split.round(1).to_string())
 
-# Sensitivity: HGVs and buses: see docs/notes/Inputs/Data_Processing/Demand/DFES_Demand.md#sensitivity-hgvs-and-buses
+# Reruns the EV energy calc with HGV/bus counts capped at their observed
+# Orkney fleet sizes (VEH0105 2026 Q1) instead of DFES's projected counts,
+# using indicative unsourced multipliers -- see the note above on why HGVs
+# and buses are excluded from the central case in the first place.
 FLEET_CAP = {"HGVs": 200, "Buses & coaches": 100}      # VEH0105 2026 Q1, rounded
 CAP_MULT  = {"HGVs": 10.0, "Buses & coaches": 12.0}    # INDICATIVE, unsourced
 

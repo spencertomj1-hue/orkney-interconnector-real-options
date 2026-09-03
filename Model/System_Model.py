@@ -1,4 +1,8 @@
-# References [1]-[3]: see docs/notes/Model/System_Model.md#references
+# [1] Henao, Sauma, Reyes, Gonzalez (2017) Value of the option to defer a
+#     transmission investment, Energy Economics 65.
+# [2] Nur, MacKenzie, Min (2026) Valuation of a sequential compound option for
+#     generation/transmission expansion, J. Economy and Technology 4.
+# [3] Graca Gomes, Cardin, Wu (2025) Strategic real options for solar PV, IET PNZ 2025.
 
 import csv
 import os
@@ -6,36 +10,23 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
-from Model.Options import (NewLink, Stage1_Wind_Buildout, Stage2_Wind_Buildout, REBASE_2018_TO_2023,
-                      StagedLinkStage, stage_variable_permw, STAGED_LINK_STAGE_SIZES_DEFAULT,
-                      STAGED_LINK_STAGE1_YEAR_DEFAULT, STAGED_LINK_FIXED_PER_STAGE)
+from Model.Options import (NewLink, REBASE_2018_TO_2023, StagedLinkStage, stage_variable_permw, STAGED_LINK_STAGE_SIZES_DEFAULT, STAGED_LINK_STAGE1_YEAR_DEFAULT, STAGED_LINK_FIXED_PER_STAGE)
 from Model.Model_Components import Decision, Generation_Capacity, Link_Capacity, LIFETIMES, EXISTING_FLEET_NAMEPLATE
-from Model.Decision_Rules import (Rule, make_main_link_rule, make_stage1_wind_gated_rule, make_stage2_wind_gated_rule,
-                             make_staged_link_strategy, MAIN_LINK_BG_GEN_THRESHOLD)
+from Model.Decision_Rules import (Rule, make_main_link_rule, make_staged_link_strategy, MAIN_LINK_BG_GEN_THRESHOLD)
 from Model.Demand import base, Demand_EE, Demand_HE, Demand_FB, Demand_HT, LEVEL_2019
 from Inputs.Data_Processing.CF.PV_CF import PV_CF
 from Inputs.Data_Processing.Generation.DFES_Background import BACKGROUND
 from Inputs.Data_Processing.Generation.Prices import price_series as _price_series_raw
-from Inputs.Data_Processing.Generation.GBM_Calibration import (DEMAND_GBM_SIGMA_ESTIMATED, PRICE_GBM_SIGMA_ESTIMATED,
-                                                           PRICE_GBM_SIGMA_ESTIMATED_EXCL_CRISIS,
-                                                           BACKGROUND_GBM_SIGMA_ESTIMATED)
+from Inputs.Data_Processing.Generation.GBM_Calibration import (DEMAND_GBM_SIGMA_ESTIMATED, PRICE_GBM_SIGMA_ESTIMATED, PRICE_GBM_SIGMA_ESTIMATED_EXCL_CRISIS, BACKGROUND_GBM_SIGMA_ESTIMATED)
 from Inputs.Data_Processing.Generation.GBM_Correlation import GBM_SHOCK_CORR_ESTIMATED
 from functools import lru_cache
 
-# see docs/notes/Model/System_Model.md#scenario-discovery-capture-switch-scenario_discovery
+# Gates a post-hoc PRIM-input capture block in Results.py, right after the
+# headline marginalised MC loop. False: that block is skipped entirely -- no
+# file written, no import of anything new, no behaviour change. Never reads
+# the PRIM library itself from here or from Results.py -- that stays
+# isolated in Scenario_Discovery.py, a standalone file this model never imports.
 SCENARIO_DISCOVERY = True
-
-# see docs/notes/Model/System_Model.md#scope-1-switch-wind_as_option
-WIND_AS_OPTION = False
-
-# see docs/notes/Model/System_Model.md#include_wind_buildout-switch
-INCLUDE_WIND_BUILDOUT = False
-
-# see docs/notes/Model/System_Model.md#wind-background-capacity-and-build-year-source
-_WIND_BG_STAGE1_MW = Stage1_Wind_Buildout().Capacity()
-_WIND_BG_STAGE2_MW = Stage2_Wind_Buildout().Capacity()
-_WIND_BG_STAGE1_YEAR = 2029
-_WIND_BG_STAGE2_YEAR = 2030
 
 # price_series depends only on (scenario_name, YEARS), never on capex_mult or
 # strategy, so it's safe to memoise for the Monte Carlo sweep in Results.py.
@@ -51,7 +42,10 @@ MARINE_CF = 0.30                                    # placeholder, flat
 AVAIL = 0.90   # wake + availability + electrical losses; 0.85/0.95 for sensitivity
 RATE = 0.035   # social discount rate; swept in Results.py
 
-# see docs/notes/Model/System_Model.md#green-book-discount-rate-schedule
+# HM Treasury Green Book's actual declining long-term discount rate schedule,
+# current as of the 2026 Green Book. (year_upper_bound_inclusive, rate)
+# pairs, rate applies to appraisal years 1..upper at that band; only the
+# first two bands are ever reached by this model's 33-year horizon.
 GREEN_BOOK_SCHEDULE = [(30, 0.035), (75, 0.030), (125, 0.025), (200, 0.020), (300, 0.015), (float("inf"), 0.010)]
 
 DISCOUNT_MODE = "flat"   # "flat" (default, unchanged) | "green_book_declining"
@@ -65,8 +59,6 @@ def _green_book_year_rate(i):
             return rate
     return GREEN_BOOK_SCHEDULE[-1][1]
 
-
-# see docs/notes/Model/System_Model.md#discount_factor-cumulative-discount-logic
 def discount_factor(t):
     if DISCOUNT_MODE == "green_book_declining":
         df = 1.0
@@ -75,19 +67,33 @@ def discount_factor(t):
         return df
     return (1 + RATE) ** t
 
-# see docs/notes/Model/System_Model.md#constraint-relief-cost-constraint_cost
+# £/MWh, on spilled generation -- the interconnector's primary Ofgem
+# needs-case benefit, the same role a congestion/deferral penalty plays in
+# [1]'s TEP real-options model. £55/MWh = regulator-vetted CENTRAL, GHD
+# Western Isles Transmission CBA (Aug 2018); £70 = same source's
+# conservative upper; realised Scotland cost was £98/MWh in 2017/18
+# (National Grid MBSS), so £55 is conservative. Rebased 2018->2023.
 CONSTRAINT_COST = 55 * REBASE_2018_TO_2023
 
 # Sweep for Results.py, single source of truth: 55=central, 70=conservative-upper, 98=realised 2017/18 anchor (MBSS).
 CONSTRAINT_COST_SWEEP = [round(v * REBASE_2018_TO_2023, 2) for v in (55, 70, 98)]
 
-# see docs/notes/Model/System_Model.md#residual-value-on-capex-overrun-residual_on_overrun
+# Link Capex() includes the stochastic overrun draw -- crediting residual
+# value on that (True) would refund a cost overrun as salvage. Default
+# False: residual computed on base capex (capex_mult=1.0). Generation assets
+# unaffected -- they never take capex_mult at all.
 RESIDUAL_ON_OVERRUN = False
 
-# see docs/notes/Model/System_Model.md#corrected-multi-year-wind-library-weather_years
+# Bias-corrected Renewables.ninja, restricted to years with matched ANM
+# demand data (2015/2018 dropped for coverage gaps). Gross CF only -- AVAIL
+# applied once here, not in the dispatch loop.
 WEATHER_YEARS = [2012, 2013, 2014, 2016, 2017]
 
-# see docs/notes/Model/System_Model.md#compute_wind_cf_by_year-per-year-cf-library
+# {year: gross CF array} at the given AVAIL. Factored out of the
+# module-level WIND_CF_BY_YEAR computation so Results.py's AVAIL sensitivity
+# can recompute the library at an alternate AVAIL and swap it in -- unlike
+# CONSTRAINT_COST, WIND_CF_BY_YEAR is baked in once, not read fresh per
+# year, so it has to be recomputed wholesale.
 def compute_wind_cf_by_year(avail):
     out = {}
     for _yr in WEATHER_YEARS:
@@ -119,47 +125,13 @@ _year_means = {yr: WIND_CF_BY_YEAR[yr].mean() for yr in WEATHER_YEARS}
 _library_mean = np.mean(list(_year_means.values()))
 BASE_WEATHER_YEAR = min(WEATHER_YEARS, key=lambda yr: abs(_year_means[yr] - _library_mean))
 
-# see docs/notes/Model/System_Model.md#weather-year-sampler-iid-vs-ar1-persistence
-WX_MODE = "iid"   # "iid" | "ar1"
-
-WIND_AR1_RHO = 0.6   # operating default for the "ar1" sampler, configurable per call
-
-def estimate_wind_ar1_rho():
-    m = np.mean(list(_year_means.values()))
-    pairs = [(_year_means[yr] - m, _year_means[yr + 1] - m)
-             for yr in WEATHER_YEARS if yr + 1 in _year_means]
-    if not pairs:
-        return 0.0
-    x0, x1 = np.array(pairs).T
-    denom = np.sum(x0 ** 2)
-    return float(np.sum(x1 * x0) / denom) if denom > 0 else 0.0
-
-WIND_AR1_RHO_ESTIMATED = estimate_wind_ar1_rho()
+def sample_wx_seq(rng, n_years):
+    return rng.choice(WEATHER_YEARS, size=n_years)
 
 
-def sample_wx_seq(rng, n_years, mode=None, rho=None):
-    if mode is None:
-        mode = WX_MODE
-    if mode == "iid":
-        return rng.choice(WEATHER_YEARS, size=n_years)
-    if rho is None:
-        rho = WIND_AR1_RHO
-
-    years = np.array(WEATHER_YEARS)
-    means = np.array([_year_means[yr] for yr in WEATHER_YEARS])
-    anomalies = means - means.mean()
-    sigma = anomalies.std()
-    innovation_sigma = sigma * np.sqrt(max(0.0, 1 - rho ** 2))
-
-    x = rng.normal(0.0, sigma)   # stationary start
-    wx_seq = np.empty(n_years, dtype=years.dtype)
-    for t in range(n_years):
-        wx_seq[t] = years[np.argmin(np.abs(anomalies - x))]
-        x = rho * x + rng.normal(0.0, innovation_sigma)
-    return wx_seq
-
-
-# see docs/notes/Model/System_Model.md#noisy-early-capex_mult-estimate-for-the-cost-aware-rule
+# make_main_link_rule_cost_aware gates on this: capex_mult is only known
+# exactly at build time in reality, so treating it as known from year 0
+# would let the rule "see" information the 2019 vantage point doesn't have.
 CAPEX_ESTIMATE_SIGMA0 = 0.3         # initial lognormal sigma of the early estimate
 CAPEX_ESTIMATE_SHARPEN_YEARS = 5    # sigma shrinks linearly from SIGMA0 at t=0 to 0 by this many years in
 
@@ -177,18 +149,49 @@ def sample_capex_estimate_seq(rng, capex_mult, n_years, sigma0=None, sharpen_yea
     return seq
 
 
-# see docs/notes/Model/System_Model.md#demand-and-price-noise-anchored-to-the-dfes-and-scenario-backbone
+# Demand.py and Prices.py are both deterministic; multiplying each by its
+# own cumulative unit-mean mean-reverting multiplier (_ou_mult_seq, below)
+# adds persistent, year-to-year-correlated spread while leaving the
+# deterministic backbone as the exact expected path. Follows [2]'s
+# multiplicative demand-uncertainty treatment and the same construction [3]
+# uses for its uncertain driver -- cited for the multiplicative-anchoring
+# IDEA, not mean reversion specifically (see _ou_mult_seq for why that was
+# added). Sigmas calibrated in GBM_Calibration.py from measured data.
 DEMAND_GBM_SIGMA = DEMAND_GBM_SIGMA_ESTIMATED   # SSEN ANM annual demand, n=5 diffs, small sample
 
-# see docs/notes/Model/System_Model.md#price-gbm-sigma-crisis-inclusive-default
+# Crisis-inclusive (2001-2023) by default -- a Monte Carlo risk model
+# arguably should see the 2021-23 gas-price shock's tail rather than assume
+# it away. Swap in PRICE_GBM_SIGMA_ESTIMATED_EXCL_CRISIS (2001-2020 only,
+# ~0.34 vs ~0.46) for a "normal times" volatility assumption instead.
 PRICE_GBM_SIGMA = PRICE_GBM_SIGMA_ESTIMATED
 
-# see docs/notes/Model/System_Model.md#mean-reversion-half-lives-price_mr-and-demand_mr
+# Half-lives, years, for the mean-reverting demand/price paths: how long an
+# above/below-backbone deviation takes to decay halfway back toward the
+# deterministic DFES/scenario path. ILLUSTRATIVE, not data-calibrated --
+# nowhere near enough historical data to fit a reversion rate for any of
+# these drivers. The DIFFERENCE between them is a real judgement call
+# though: wholesale prices are routinely modelled as mean-reverting on a
+# timescale of a few years in the energy-economics literature, reverting
+# much faster than demand -- demand shocks are closer to a persistent
+# random walk in standard macro treatments.
 PRICE_MR_HALFLIFE_YEARS = 3.0
 DEMAND_MR_HALFLIFE_YEARS = 15.0
 
 
-# see docs/notes/Model/System_Model.md#_ou_mult_seq-mean-reverting-multiplier-path
+# Mean-reverting (Ornstein-Uhlenbeck, in log-space) multiplier path, shared
+# by sample_demand_seq/sample_price_seq/sample_background_seq. log_m[t]
+# pulls back toward mu_target at rate theta each year instead of
+# random-walking freely -- unlike a pure random walk, whose log-variance
+# grows LINEARLY and unboundedly with horizon, this converges to a
+# STATIONARY level. Adopted project-wide after an earlier pure-random-walk
+# version produced implausible tails over 26-33yr horizons (one draw's
+# terminal price reached >£8000/MWh, ~15000x its deterministic backbone).
+# Uses the EXACT OU transition (not Euler), so stationary variance is hit
+# exactly regardless of step size. mu_target is set so the lognormal
+# stationary distribution's mean is exactly 1 (a martingale property around
+# the deterministic backbone): mu_target = -sigma^2/(4*theta). z_seq: optional
+# pre-drawn standard-normal shocks, one per year, to correlate this path with
+# another (see sample_correlated_gbm_shocks); None draws independent shocks.
 def _ou_mult_seq(rng, n_years, sigma, theta, dt=1.0, z_seq=None):
     decay = np.exp(-theta * dt)
     stationary_var = sigma ** 2 / (2 * theta) if theta > 0 else float("inf")
@@ -205,11 +208,23 @@ def _ou_mult_seq(rng, n_years, sigma, theta, dt=1.0, z_seq=None):
     return seq
 
 
-# see docs/notes/Model/System_Model.md#gbm-shock-correlation-gbm_shock_corr
+# Demand, price and background-generation GBM shocks are correlated, not
+# independent -- a cold winter plausibly drives higher demand AND higher gas
+# prices together; independent draws a "diversification benefit" between
+# them that wouldn't really exist, understating tail risk. Estimated from
+# measured data (see GBM_Correlation.py) rather than the original hand-picked
+# placeholder. demand-background measured -0.51 but is DELIBERATELY
+# OVERRIDDEN to +0.10 (5 years judged too thin to trust the sign flip).
+# Results.py's GBM_SHOCK_CORR sensitivity runs the placeholder alongside this.
 GBM_SHOCK_CORR = GBM_SHOCK_CORR_ESTIMATED
 
 
-# see docs/notes/Model/System_Model.md#sample_correlated_gbm_shocks
+# Draw correlated standard-normal shock paths for demand, price and
+# background-generation GBM noise JOINTLY (via Cholesky decomposition of
+# corr), instead of each sampler drawing its own independent shocks.
+# Returns (n_years, 3), columns [demand, price, background], row t aligned
+# to calendar year YEARS[t] -- callers must slice consistently with their
+# own year range (background_gen_mw's own series is shorter, starting 2026).
 def sample_correlated_gbm_shocks(rng, n_years, corr=None):
     if corr is None:
         corr = GBM_SHOCK_CORR
@@ -218,7 +233,10 @@ def sample_correlated_gbm_shocks(rng, n_years, corr=None):
     return z_indep @ L.T
 
 
-# see docs/notes/Model/System_Model.md#sample_demand_seq
+# DFES demand path times a cumulative unit-mean mean-reverting multiplier --
+# DFES stays the exact expected path, the multiplier only adds persistent
+# spread around it. Pass z_seq to correlate with sample_price_seq/
+# sample_background_seq's shocks.
 def sample_demand_seq(rng, base_demand, n_years, sigma_d=None, z_seq=None, halflife=None):
     if sigma_d is None:
         sigma_d = DEMAND_GBM_SIGMA
@@ -228,7 +246,8 @@ def sample_demand_seq(rng, base_demand, n_years, sigma_d=None, z_seq=None, halfl
     return np.asarray(base_demand) * mult
 
 
-# see docs/notes/Model/System_Model.md#sample_price_seq
+# Scenario price path times a cumulative unit-mean mean-reverting multiplier
+# -- same anchored construction as sample_demand_seq.
 def sample_price_seq(rng, base_price, n_years, sigma_p=None, z_seq=None, halflife=None):
     if sigma_p is None:
         sigma_p = PRICE_GBM_SIGMA
@@ -238,14 +257,24 @@ def sample_price_seq(rng, base_price, n_years, sigma_p=None, z_seq=None, halflif
     return np.asarray(base_price) * mult
 
 
-# see docs/notes/Model/System_Model.md#background_gbm_sigma-calibration
+# DFES background generation is a forecast pipeline with no historical
+# track record, so this is calibrated instead from measured Orkney
+# generation OUTPUT (ANM) as the closest available proxy. Lands at ~0.185,
+# between DEMAND_GBM_SIGMA (~0.062) and PRICE_GBM_SIGMA (~0.34-0.46), same
+# ordering the old unsourced 0.12 placeholder assumed.
 BACKGROUND_GBM_SIGMA = BACKGROUND_GBM_SIGMA_ESTIMATED
 
-# see docs/notes/Model/System_Model.md#background_mr_halflife_years
+# ILLUSTRATIVE, not data-calibrated -- only ~5 paired years of Orkney
+# background-generation data exist, nowhere near enough to fit a reversion
+# rate. 8 years is a rough guess at grid-connection-queue/planning-cycle
+# timescales, not a fitted value.
 BACKGROUND_MR_HALFLIFE_YEARS = 8.0
 
 
-# see docs/notes/Model/System_Model.md#sample_background_seq
+# DFES background generation path times a cumulative unit-mean mean-reverting
+# multiplier. ONE shared multiplier per year across every tech column (a
+# "DFES pipeline running ahead of/behind schedule" shock), not independent
+# per-technology noise. Only spans base_background's own index (2026-2051).
 def sample_background_seq(rng, base_background, sigma_bg=None, z_seq=None, halflife=None):
     if sigma_bg is None:
         sigma_bg = BACKGROUND_GBM_SIGMA
@@ -266,10 +295,16 @@ PROFILES["Marine"] = np.clip(_raw * (MARINE_CF / _raw.mean()), 0.0, 1.0)
 YEARS = list(range(2019, 2052))          # limit of Demand.py / DFES data
 END_YEAR = YEARS[-1]
 
-# see docs/notes/Model/System_Model.md#cfd-strike-and-price_base_year
+# CfD strike held FLAT in real terms -- model is real-terms throughout, so
+# CPI-indexing the strike keeps it constant in real money (rebasing 39.65,
+# £2012/MWh, to PRICE_BASE_YEAR once, rather than escalating it nominally
+# every year). PRICE_BASE_YEAR must match capex/price_series's price base --
+# both UNVERIFIED; 2023 is a working assumption pending that check.
 PRICE_BASE_YEAR = 2023
 
-# see docs/notes/Model/System_Model.md#cpi_path-index-source-and-extrapolation
+# ONS CPI annual index (2015=100), 2012-2025, from commonly-cited ONS rates
+# (not a live ONS query) -- verify against published series D7BT/L522 before
+# submission. Beyond 2025, extended flat at CPI_FLAT_ASSUMPTION_RATE.
 CPI_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
             "Methodology_4/Coding/Inputs/Data/cpi_index.csv")
 CPI_FLAT_ASSUMPTION_RATE = 0.02   # assumed CPI growth beyond the CSV's last historical year
@@ -289,7 +324,26 @@ CPI_BY_YEAR = _load_cpi_by_year()
 # strike quoted in 2012 money, rebased once to PRICE_BASE_YEAR, flat thereafter
 CFD_STRIKE = 39.65 * CPI_BY_YEAR[PRICE_BASE_YEAR] / CPI_BY_YEAR[2012]
 
-# see docs/notes/Model/System_Model.md#stochastic-link-capex-calibration-capex_median-and-capex_sigma
+# CAPEX_MEDIAN reverts to the original provisional/unsourced 1.4x -- an
+# outright 4x median overrun (an earlier version, taken directly from the
+# SHET sample below) was judged implausible as a CENTRAL estimate even
+# though it's what that sample's own median/P90 literally say. CAPEX_SIGMA
+# keeps the SPREAD from that sample: the dispersion of real cost-forecast
+# revisions is still better evidence than an old single-point-derived
+# sigma, even if the sample's absolute level isn't trusted as central.
+#
+# Sample: SHET's cost-forecast revisions across its 8-project ASTI
+# portfolio (Ofgem, "Statutory consultation on eight SHET Early
+# Construction Funding applications...", 5 March 2026, Table 1) -- SHET is
+# the transmission owner actually building the Orkney-Caithness link.
+# Table 1 gives the ECF request as a % of the 2022 licence cost and as a %
+# of SHET's updated cost forecast, for the SAME £ ECF amount, so the ratio
+# of those two percentages is that project's cost-forecast multiplier.
+# Verified independently: the mean of the 8 multipliers below (3.835x,
+# +283.5%) exactly reproduces the headline figure reported in secondary
+# coverage of this consultation. Caveat: same-company, same-ASTI-programme
+# evidence, not the Orkney project's own outturn, and these are SHET's
+# current forecasts, not Ofgem-audited final costs.
 _SHET_ASTI_COST_MULTIPLIERS = [
     30 / 7,    # BLN4:  Beauly to Loch Buidhe 400kV Reinforcement
     34 / 6,    # SLU4:  Loch Buidhe to Spittal 400kV Reinforcement
@@ -307,10 +361,21 @@ CAPEX_SIGMA = float(np.std(np.log(_SHET_ASTI_COST_MULTIPLIERS), ddof=1))
 CAPEX_MU = np.log(CAPEX_MEDIAN)
 CAPEX_P90 = float(np.exp(CAPEX_MU + 1.2816 * CAPEX_SIGMA))   # derived, not an independent anchor -- ~2.19x
 
-# see docs/notes/Model/System_Model.md#main-link-cost-aware-trigger-cap-main_link_cost_cap
+# Main Link's cost-aware trigger: defer a demand-justified build if the
+# noisy early capex_mult estimate looks worse than expected. No independent
+# real-world anchor -- set equal to CAPEX_MEDIAN itself (the natural "no
+# worse than expected" reference point) rather than a sweep's own noisy
+# peak, to avoid overfitting the headline default to one draw sample.
 MAIN_LINK_COST_CAP = CAPEX_MEDIAN
 
-# see docs/notes/Model/System_Model.md#fix-a-composite-growth_index-observable
+# Alternative to background_gen_mw for make_main_link_rule
+# (observable="growth_index", default OFF). Blends demand's OWN growth
+# (relative to its 2019 base level) with background_gen_mw's growth
+# (relative to MAIN_LINK_BG_GEN_THRESHOLD), so both exogenous DFES drivers
+# register instead of only generation -- checked against DFES data: does
+# NOT diverge meaningfully earlier than background_gen_mw alone.
+# GROWTH_INDEX_BLEND_WEIGHT: arbitrary 50/50 split, no independent
+# justification for this weighting, tune directly.
 GROWTH_INDEX_BLEND_WEIGHT = 0.5
 GROWTH_INDEX_DEMAND_REF = LEVEL_2019               # demand's own 2019 base level, GWh
 GROWTH_INDEX_BG_REF = MAIN_LINK_BG_GEN_THRESHOLD   # 135MW, Ofgem's condition -- reused, not reinvented
@@ -323,15 +388,14 @@ def set_rate(r): # Rebind the discount rate. Used by the sensitivity sweep in Re
 G = Generation_Capacity()
 L = Link_Capacity()
 
-# see docs/notes/Model/System_Model.md#strategy-factories-wind-gating-on-wind_as_option
 def _baseline(capex_mult=1.0):
-    decisions = [Decision(NewLink(capex_mult), 2028)]
-    if WIND_AS_OPTION and INCLUDE_WIND_BUILDOUT:
-        decisions += [Decision(Stage1_Wind_Buildout(), 2029),
-                      Decision(Stage2_Wind_Buildout(), 2030)]
-    return decisions
+    return [Decision(NewLink(capex_mult), 2028)]
 
-# see docs/notes/Model/System_Model.md#_staged-fixed-schedule-staged-interconnector-twin
+# Fixed-schedule twin of the rule-based staged interconnector build: same 4
+# blocks, same per-stage costs, same architecture -- just dropped as
+# fixed-year Decisions instead of gated on background_gen_mw. capex_mult is
+# the single passed-in project-wide draw, applied identically to every
+# stage (rigid strategies don't read state["capex_estimate"], a rule-only mechanism).
 def _staged(capex_mult=1.0):
     stage_sizes = STAGED_LINK_STAGE_SIZES_DEFAULT
     decisions = []
@@ -342,9 +406,6 @@ def _staged(capex_mult=1.0):
         asset = StagedLinkStage(mw, STAGED_LINK_FIXED_PER_STAGE, variable_permw, capex_mult)
         decisions.append(Decision(asset, year))
         cum_mw_before += mw
-    if WIND_AS_OPTION and INCLUDE_WIND_BUILDOUT:
-        decisions.append(Decision(Stage1_Wind_Buildout(), 2029))
-        decisions.append(Decision(Stage2_Wind_Buildout(), 2030))
     return decisions
 
 Strategies_2 = {
@@ -352,46 +413,59 @@ Strategies_2 = {
     "Fixed 4-Stage": _staged,
 }
 
-# see docs/notes/Model/System_Model.md#rigid-vs-flexible-strategy-taxonomy
+# Fixed/staged (rigid, Strategies_2) vs flexible (Strategies_Flex, below) is
+# the same three-way design taxonomy -- fixed, phased, flexible -- [3]
+# compares for PV capacity expansion, applied here to the interconnector.
 
-# see docs/notes/Model/System_Model.md#flexible-strategies-wind-gating-stage-5
 def _flexible(capex_mult=1.0, observable=None, trend_window=None, lookahead_years=None,
               min_decision_year=None, min_real_points=None):
-    # see docs/notes/Model/System_Model.md#_flexible-fix-a-knobs
-    opts = [make_main_link_rule(capex_mult, observable=observable, trend_window=trend_window,
+    # All knobs default None -> exactly today's make_main_link_rule() call,
+    # unchanged. min_real_points (paired with a wider trend_window) is the
+    # one that actually helped in testing -- min_decision_year was checked
+    # and found counterproductive (see that function's own comment).
+    return [make_main_link_rule(capex_mult, observable=observable, trend_window=trend_window,
                                  lookahead_years=lookahead_years, min_decision_year=min_decision_year,
                                  min_real_points=min_real_points)]
-    if WIND_AS_OPTION and INCLUDE_WIND_BUILDOUT:
-        opts += [make_stage1_wind_gated_rule(), make_stage2_wind_gated_rule()]
-    return opts
 
-# see docs/notes/Model/System_Model.md#_flexible_cost_aware-cost-aware-trigger
+# Same demand-side trend-projected trigger as _flexible, plus an AND-gate on
+# the noisy early capex_mult estimate -- defers a demand-justified Main Link
+# build if the cost estimate looks like an overrun. Results.py's cost_cap
+# sensitivity sweep calls this directly with other values, same pattern as
+# _flexible_staged's fixed_per_stage/theta overrides.
 def _flexible_cost_aware(capex_mult=1.0, cost_cap=MAIN_LINK_COST_CAP,
                           observable=None, trend_window=None, lookahead_years=None,
                           min_decision_year=None, min_real_points=None,
                           cost_cap_max_defer=None, gate_mode="capex_screen", npv_margin=0.0):
-    # see docs/notes/Model/System_Model.md#_flexible_cost_aware-fix-a-and-fix-b-knobs
-    opts = [make_main_link_rule(capex_mult, cost_cap=cost_cap, observable=observable,
+    # Fix A knobs: same as _flexible above. Fix B knobs (cost_cap_max_defer,
+    # gate_mode, npv_margin): see make_main_link_rule/make_npv_gate. All
+    # default to today's exact behaviour (plain cost_cap screen).
+    return [make_main_link_rule(capex_mult, cost_cap=cost_cap, observable=observable,
                                  trend_window=trend_window, lookahead_years=lookahead_years,
                                  min_decision_year=min_decision_year, min_real_points=min_real_points,
                                  cost_cap_max_defer=cost_cap_max_defer, gate_mode=gate_mode,
                                  npv_margin=npv_margin)]
-    if WIND_AS_OPTION and INCLUDE_WIND_BUILDOUT:
-        opts += [make_stage1_wind_gated_rule(), make_stage2_wind_gated_rule()]
-    return opts
 
-# see docs/notes/Model/System_Model.md#_flexible_staged-rule-based-staged-interconnector
+# make_staged_link_strategy: replaces the single 220MW NewLink block with N
+# stages, individually priced with a learning-curve discount on later
+# stages' £/MW. Stage 1 builds unconditionally at a fixed year (2028);
+# stages 2+ gate on TOTAL GENERATION (background_gen_mw), genuinely
+# reactive. capex_mult is unused -- each stage's realised multiplier comes
+# from state["capex_estimate"] at its own build year instead. fixed_per_stage/
+# theta are override hooks for Results.py's sensitivity sweeps.
 def _flexible_staged(capex_mult=1.0, fixed_per_stage=None, theta=None):
-    opts = list(make_staged_link_strategy(fixed_per_stage=fixed_per_stage, theta=theta))
-    if WIND_AS_OPTION and INCLUDE_WIND_BUILDOUT:
-        opts += [make_stage1_wind_gated_rule(prereq="StagedLinkStage"),
-                 make_stage2_wind_gated_rule(prereq="StagedLinkStage")]
-    return opts
+    return list(make_staged_link_strategy(fixed_per_stage=fixed_per_stage, theta=theta))
 
 Strategies_Flex = {
     "Flexible 1-Stage"             : _flexible,
     "Flexible 4-Stage"             : _flexible_staged,
-    # see docs/notes/Model/System_Model.md#flexible-1-stage-cost-aware-npv_proxy-gate_mode-pin
+    # gate_mode="npv_proxy" pinned here (not as _flexible_cost_aware's own
+    # default) -- checked directly: the default plain cost_cap screen is
+    # myopic, refusing to build even where building is still strongly
+    # NPV-positive; npv_proxy recovered real ENPV in testing. Pinned via a
+    # lambda, not by changing _flexible_cost_aware's own default, because
+    # Sensitivities.py's cost_cap sweep calls _flexible_cost_aware directly
+    # and relies on its default staying "capex_screen" for cost_cap to mean
+    # anything (npv_proxy mode ignores cost_cap entirely).
     "Flexible 1-Stage (Cost-Aware)": lambda capex_mult=1.0: _flexible_cost_aware(capex_mult, gate_mode="npv_proxy"),
 }
 
@@ -415,11 +489,15 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
     pv_energy = 0      # discounted delivered energy, GWh
     pv_revenue = 0     # discounted revenue, £
     total_curtail = 0  # undiscounted curtailment, GWh
-    # see docs/notes/Model/System_Model.md#lcot-tracking-link_cost_t-and-pv_link_export
+    # LCOT (Levelised Cost of Transmission): Link-only discounted cost and
+    # discounted energy actually exported THROUGH the link -- a subset of
+    # total_cost_t/pv_energy above, tracked in parallel, not derived from
+    # them after the fact.
     link_cost_t = 0       # discounted cost, £, Link-classified assets only
     pv_link_export = 0    # discounted energy exported through the link, GWh
 
-    # see docs/notes/Model/System_Model.md#run_strategy-price_seq-override
+    # price_seq lets the MC loop inject a noisy (GBM) price path drawn from
+    # its own rng; None keeps the deterministic scenario lookup.
     PRICE_YR = price_series(scenario_name, YEARS) if price_seq is None else price_seq
 
     # Options may contain Decisions (fixed build year) and/or Rules (build
@@ -431,7 +509,9 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
     rule_log = {r.name: {"fired": False, "decision_year": None, "build_year": None, "capex": None}
                 for r in rules}
 
-    # see docs/notes/Model/System_Model.md#headroom_p90-computed-only-if-needed
+    # headroom_p90 costs a full np.percentile (sort over 8760 hours) every
+    # year -- worth skipping unless a rule actually reads it (none do
+    # currently).
     _needed_observables = {getattr(r, "observable", None) for r in rules}
 
     # Per-year diagnostics the rules read from (instrumentation only -- does
@@ -489,28 +569,27 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
         gen_h = np.zeros(8760)
         caps = G.Capacity_By_Type(Year)
 
-        # see docs/notes/Model/System_Model.md#dfes-background-existing-fleet-nameplate-subtraction
+        # Subtract the existing fleet's original nameplate PERMANENTLY (not
+        # life-gated) so it's represented once and retires once -- a
+        # life-gated subtraction would let the immortal DFES base silently
+        # re-add retired capacity. background_seq lets the MC loop inject a
+        # noisy (GBM) path; None keeps the deterministic BACKGROUND[scenario] lookup.
         bg = background_seq if background_seq is not None else BACKGROUND.get(scenario_name)
         if bg is not None and Year in bg.index:
             for tech, mw in bg.loc[Year].items():
                 bg_net = max(0.0, mw - EXISTING_FLEET_NAMEPLATE.get(tech, 0.0))
                 caps[tech] = caps.get(tech, 0.0) + bg_net
                 state["background_gen_mw"][t] += bg_net
-                # see docs/notes/Model/System_Model.md#fix-a-v3-dfes_background_gen_mw-isolation
+                # dfes_background_gen_mw and background_gen_mw are updated
+                # identically here -- DFES is the only source feeding either
+                # one now that the exogenous wind-buildout background was
+                # removed. Kept as a separate observable (rather than
+                # collapsed into background_gen_mw) since Decision_Rules.py
+                # still offers it as a distinct trigger observable choice.
                 state["dfes_background_gen_mw"][t] += bg_net
 
-        # see docs/notes/Model/System_Model.md#scope-1-wind-as-exogenous-background-in-run_strategy
-        if not WIND_AS_OPTION and INCLUDE_WIND_BUILDOUT:
-            wind_bg_mw = 0.0
-            if Year >= _WIND_BG_STAGE1_YEAR:
-                wind_bg_mw += _WIND_BG_STAGE1_MW
-            if Year >= _WIND_BG_STAGE2_YEAR:
-                wind_bg_mw += _WIND_BG_STAGE2_MW
-            if wind_bg_mw > 0:
-                caps["Wind"] = caps.get("Wind", 0.0) + wind_bg_mw
-                state["background_gen_mw"][t] += wind_bg_mw
-
-        # see docs/notes/Model/System_Model.md#growth_index-per-year-computation
+        # Fix A composite observable -- only computed if some rule actually
+        # reads it, same skip-if-unneeded pattern as headroom_p90.
         if "growth_index" in _needed_observables:
             bg_val = state["background_gen_mw"][t]
             if bg_val > 0:
@@ -518,7 +597,9 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
                 bg_term = bg_val / GROWTH_INDEX_BG_REF
                 state["growth_index"][t] = (GROWTH_INDEX_BLEND_WEIGHT * demand_term
                                              + (1 - GROWTH_INDEX_BLEND_WEIGHT) * bg_term)
-            # see docs/notes/Model/System_Model.md#growth_index-zero-convention-pre-2026
+            # Else leave at 0 -- matches background_gen_mw's own
+            # structural-zero convention pre-2026, so TrendProjectedRule's
+            # kink-avoidance still works correctly for this observable too.
 
         profiles = dict(PROFILES) # local copy each year, do not mutate module-level PROFILES
         profiles["Wind"] = WIND_CF_BY_YEAR[wx_seq[t]]
@@ -570,7 +651,10 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
             state["headroom_p90"][t] = np.percentile(surplus, 90) - link
         state["delivered"][t] = delivered
         state["gen_total"][t] = gen_h.sum()
-        # see docs/notes/Model/System_Model.md#price_gbp_mwh-fix-b-storage-rationale
+        # Fix B (make_npv_gate): the price the CURRENTLY-delivered mix
+        # earns, used as a proxy for what NEWLY-deliverable (currently
+        # curtailed) energy would earn once the link removes the
+        # constraint -- unconditional, already computed above, no extra cost.
         state["price_gbp_mwh"][t] = price
 
         # rule evaluation: single forward pass, no lookahead
@@ -610,7 +694,8 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
 
     npv = pv_revenue - total_cost_t
 
-    # see docs/notes/Model/System_Model.md#run_strategy-return-stashed-lcot-fields
+    # Stashed rather than added to the return tuple, so every existing
+    # exact-arity Run_Strategy(...) unpack site stays valid unchanged.
     state["link_cost_total"] = link_cost_t          # discounted £, Link-only (LCOT numerator)
     state["pv_link_export_gwh"] = pv_link_export    # discounted GWh, through the link only (LCOT denominator)
 

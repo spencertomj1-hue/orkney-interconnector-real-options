@@ -1,5 +1,12 @@
-# see docs/notes/Reporting/Sensitivities.md#overview
-# References [1],[2],[4]: see docs/notes/Reporting/Sensitivities.md#references
+# Sensitivity sweeps, split out of Results.py. Run Results.py first (with
+# RUN_MC=True) so MC_CACHE_PATH exists -- every Monte Carlo sweep below loads
+# that cache's draws instead of redrawing them.
+#
+# [1] Henao, Sauma, Reyes, Gonzalez (2017) Value of the option to defer a
+#     transmission investment, Energy Economics 65.
+# [2] Nur, MacKenzie, Min (2026) Valuation of a sequential compound option for
+#     generation/transmission expansion, J. Economy and Technology 4.
+# [4] Graca Gomes, Cardin, Wu (2025) Strategic real options for solar PV, IET PNZ 2025.
 
 import os
 import sys
@@ -13,7 +20,7 @@ import Model.System_Model as M
 from Model.System_Model import Run_Strategy, Strategies_2, Strategies_Flex, Scenarios, DFES_ONLY
 from Model.Model_Components import Decision
 import Model.Options as O
-from Model.Options import NewLink, Stage1_Wind_Buildout, Stage2_Wind_Buildout, STAGED_LINK_FIXED_PER_STAGE_SWEEP, LINK_OPEX_SWEEP
+from Model.Options import NewLink, STAGED_LINK_FIXED_PER_STAGE_SWEEP, LINK_OPEX_SWEEP
 from Model.Decision_Rules import STAGED_LINK_THETA_SWEEP
 from Inputs.Data_Processing.Generation.GBM_Correlation import PLACEHOLDER_CORR_MATRIX
 
@@ -26,16 +33,20 @@ MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
 with open(MC_CACHE_PATH, "rb") as _f:
     _CACHE = pickle.load(_f)
 
-# see docs/notes/Reporting/Sensitivities.md#_check_cache_provenance-rationale
+# Loud-fail provenance guard: a cache built under different model-defining
+# flags than this run's current ones would silently produce wrong-world
+# numbers. A pre-guard cache (no "metadata" key) fails loud too, not a
+# silent pass -- an un-stamped cache's provenance is unknown, not assumed-fine.
 def _check_cache_provenance(cache, path):
     meta = cache.get("metadata")
     if meta is None:
         raise RuntimeError(
             f"{path} has no provenance metadata (written before this guard existed) -- "
             "regenerate it (or re-stamp it) before trusting its marg_store/marg_cost/marg_energy.")
+    # no model flags tracked here currently (wind-as-option removed) -- kept
+    # as an empty tuple so future flags can be added without restructuring.
     mismatches = [f"{k}: cache={meta[k]!r} vs current={cur!r}"
-                  for k, cur in (("INCLUDE_WIND_BUILDOUT", M.INCLUDE_WIND_BUILDOUT),
-                                 ("WIND_AS_OPTION", M.WIND_AS_OPTION))
+                  for k, cur in ()
                   if meta[k] != cur]
     if mismatches:
         raise RuntimeError(
@@ -44,7 +55,10 @@ def _check_cache_provenance(cache, path):
 
 _check_cache_provenance(_CACHE, MC_CACHE_PATH)
 
-# see docs/notes/Reporting/Sensitivities.md#_paths_from_stored_z-copy-paste-note
+# Turns a stored correlated shock block z (n_years, 3) + scenario name into
+# (demand, price_seq, background_seq) with no rng involved -- the sample_*_seq
+# functions never touch their rng argument when z_seq is supplied, so passing
+# None is safe. Copy-pasted from Results.py's version of the same helper.
 def _paths_from_stored_z(z, scenario):
     demand = M.sample_demand_seq(None, Scenarios[scenario], len(M.YEARS), z_seq=z[:, 0])
     price_seq = M.sample_price_seq(None, M.price_series(scenario, M.YEARS), len(M.YEARS), z_seq=z[:, 1])
@@ -57,16 +71,18 @@ def _paths_from_stored_z(z, scenario):
         background_seq = None
     return demand, price_seq, background_seq
 
-# see docs/notes/Reporting/Sensitivities.md#_do_nothing-copy-paste-note
+# Local zero-build reference case (a Decision with BuildYear=None never
+# fires -- see Model_Components.Decision.IsBuilt). Copy-pasted from
+# Results.py; needed here for the cost-aware cost_cap sweep's "Do Nothing" arm.
 def _do_nothing(capex_mult=1.0):
-    return [Decision(NewLink(capex_mult), None),
-            Decision(Stage1_Wind_Buildout(), None),
-            Decision(Stage2_Wind_Buildout(), None)]
+    return [Decision(NewLink(capex_mult), None)]
 
 ALL_STRATEGIES = {"Do Nothing": _do_nothing, **Strategies_2, **Strategies_Flex}
 TARGET_STRATEGIES = ["Baseline", "Fixed 4-Stage", "Flexible 4-Stage", "Flexible 1-Stage (Cost-Aware)", "Flexible 1-Stage"]
 TARGET_LABELS = {s: s for s in TARGET_STRATEGIES}   # identity map -- see Results.py's own TARGET_LABELS comment
-# see docs/notes/Reporting/Sensitivities.md#plot_strategies-scope
+# The standard 4-strategy set every headline chart shows (Baseline, Fixed
+# 4-Stage, Flexible 4-Stage, Flexible 1-Stage), matching Results.py's own
+# target curves -- prints below still use the full TARGET_STRATEGIES.
 PLOT_STRATEGIES = [s for s in TARGET_STRATEGIES if s != "Flexible 1-Stage (Cost-Aware)"]
 palette = ["#1f4e79", "#2e7d32", "firebrick", "#b8860b", "#6a3d9a", "#e07b39"]
 
@@ -78,7 +94,8 @@ def crossover(rates, gap):
     return None
 
 # ---- discount rate table, Flat vs Green Book, crossover curves ------------
-# see docs/notes/Reporting/Sensitivities.md#discount-rate-table-section-scope
+# All three below are deterministic (no Monte Carlo), so they don't touch
+# the MC cache at all -- they call Run_Strategy directly.
 def enpv(sname, r):
     M.set_rate(r)
     opts = Strategies_2[sname](1.0)
@@ -92,7 +109,10 @@ for sname in Strategies_2:
     print(f"{sname:<18}" + "".join(f"{enpv(sname, r):>10.0f}" for r in rates_t))
 
 # ---- flat 3.5% vs Green Book's actual declining schedule -------------------
-# see docs/notes/Reporting/Sensitivities.md#flat-vs-green-book-declining-schedule-rationale
+# The table above sweeps a single FLAT rate throughout, but Green Book's real
+# schedule declines (3.5% years 1-30, 3.0% years 31-75, ...) and this model's
+# 33-year horizon (2019-2051) puts 2 years (2050, 2051) in the 3.0% band --
+# checked directly for the size of that difference rather than assumed.
 print("\n=== Flat 3.5% vs Green Book declining schedule: ENPV, £m ===")
 M.set_rate(0.035)
 print(f"{'Strategy':<18}{'Flat_3.5%':>12}{'GB_declining':>14}{'Delta_%':>10}")
@@ -107,7 +127,9 @@ for sname in Strategies_2:
     print(f"{sname:<18}{npv_flat/1e6:>12.0f}{npv_gb/1e6:>14.0f}{delta_pct:>10.1%}")
 
 # ---- crossover curves -----------------------------------------------------
-# see docs/notes/Reporting/Sensitivities.md#crossover-curves-literature-parallel
+# Discount-rate sensitivity of build-now-vs-defer value, and the crossing
+# rate where the ranking flips, is the same real-options question [1]
+# resolves with a binomial tree and [2] resolves with a binomial lattice.
 rates = np.arange(0.01, 0.121, 0.005)
 PAIRS = [("Baseline", "Fixed 4-Stage")]
 curves = {f"{a} − {b}": np.array([enpv(a, r) - enpv(b, r) for r in rates])
@@ -137,7 +159,10 @@ plt.close(fig)
 
 # ---- 7. weighting sensitivity: Equal (comparison vs the NetZero_Tilt --
 # ---- headline used everywhere else) -------------------------------------
-# see docs/notes/Reporting/Sensitivities.md#weighting-sensitivity-equal-vs-netzero_tilt-rationale
+# The NetZero_Tilt ranking comes straight from the cache (Results.py's
+# headline run). The Equal-weighted run is a genuinely different experiment
+# (different scenario draw probabilities, so not reconstructable from the
+# cache's stored draws) -- it needs its own fresh run.
 def _run_marginalised_weighting(weights, seed=42, n=2000, strategies=None):
     if strategies is None:
         strategies = Strategies_2
@@ -207,7 +232,9 @@ else:
     print(f"  NetZero_Tilt: {rank_tilt}")
     print(f"  Equal:        {rank_equal}")
 
-# see docs/notes/Reporting/Sensitivities.md#weighting-sensitivity-chart-colour-encoding-choice
+# Colour here encodes WEIGHTING, not strategy -- deliberately doesn't reuse
+# `palette` (which codes strategy identity everywhere else in this file), to
+# avoid implying the wrong thing is being colour-coded.
 _WEIGHTING_COLOR = {"NetZero_Tilt": "#1f4e79", "Equal": "firebrick"}
 fig, ax = plt.subplots(figsize=(8.5, 4.5))
 _snames = list(ALL_STRATEGIES.keys())
@@ -228,7 +255,10 @@ fig.savefig(os.path.join(SENSITIVITIES_PLOTS_DIR, "weighting_sensitivity.png"), 
 plt.close(fig)
 
 # ---- 9+10. RESIDUAL_ON_OVERRUN & CONSTRAINT_COST sensitivity, combined ----
-# see docs/notes/Reporting/Sensitivities.md#residual_on_overrun-and-constraint_cost-sensitivity-draw-sourcing
+# Both sweeps share NetZero_Tilt weighting, n=500, drawn once per iteration --
+# every Strategies_2 strategy runs under all settings (2 residual flags + N
+# constraint costs) on the same shared draw, taken from the cache's first
+# N_SENS rows.
 N_SENS = 500
 _orig_residual_flag = M.RESIDUAL_ON_OVERRUN
 _orig_constraint_cost = M.CONSTRAINT_COST
@@ -285,7 +315,12 @@ for sname in Strategies_2:
         f"{constraint_sensitivity[_cc][sname] / 1e6:>14.1f}" for _cc in constraint_cost_values))
 
 # ---- 11. STAGED_LINK_FIXED_PER_STAGE sensitivity ------------------------
-# see docs/notes/Reporting/Sensitivities.md#staged_link_fixed_per_stage-sensitivity-rationale
+# No real-world figure exists to calibrate this against, so it's swept
+# instead of guessed harder. "Flexible 4-Stage" re-runs at every
+# fixed_per_stage value, "Flexible 1-Stage" (unaffected) runs once, all on
+# the same cached draws -- testing how a phased design's own per-stage cost
+# assumption moves its value relative to a non-staged alternative, the same
+# question [4] asks of phased PV deployment against a fixed design.
 print("\n=== STAGED_LINK_FIXED_PER_STAGE sensitivity: ENPV, marginalised MC, NetZero_Tilt weighting, N=500 ===")
 fps_values = STAGED_LINK_FIXED_PER_STAGE_SWEEP
 
@@ -318,7 +353,9 @@ for fp in fps_values:
           f"{np.median(diff):>20.1f}{(diff < 0).mean():>18.2f}")
 
 # ---- 12. STAGED_LINK_THETA sensitivity -----------------------------------
-# see docs/notes/Reporting/Sensitivities.md#staged_link_theta-sensitivity-rationale
+# theta multiplies the Ofgem-scaled background_gen_mw threshold each stage
+# 2+ triggers on -- no real basis for a specific value, swept instead of
+# guessed harder. Same cache-draw pattern as section 11.
 print("\n=== STAGED_LINK_THETA sensitivity: ENPV, marginalised MC, NetZero_Tilt weighting, N=500 ===")
 theta_values = STAGED_LINK_THETA_SWEEP
 
@@ -351,7 +388,8 @@ for th in theta_values:
           f"{np.median(diff):>20.1f}{(diff < 0).mean():>18.2f}")
 
 # ---- 13. LINK_OPEX_RATE sensitivity --------------------------------------
-# see docs/notes/Reporting/Sensitivities.md#link_opex_rate-sensitivity-mechanism
+# Link assets read LINK_OPEX_RATE as a plain module global AT CONSTRUCTION
+# TIME, so mutating Options.LINK_OPEX_RATE before each factory() call takes effect.
 print("\n=== LINK_OPEX_RATE sensitivity: ENPV, marginalised MC, NetZero_Tilt weighting, N=500 ===")
 opex_values = LINK_OPEX_SWEEP
 _orig_link_opex_rate = O.LINK_OPEX_RATE
@@ -382,7 +420,9 @@ for sname in Strategies_2:
         f"{opex_sensitivity[rate][sname] / 1e6:>14.1f}" for rate in opex_values))
 
 # ---- 14. AVAIL (wake + availability + electrical losses) sensitivity ----
-# see docs/notes/Reporting/Sensitivities.md#avail-sensitivity-mechanism
+# Unlike LINK_OPEX_RATE, AVAIL is baked into WIND_CF_BY_YEAR ONCE at import
+# time, not read fresh per year -- compute_wind_cf_by_year(avail) recomputes
+# that dict, swapped in before each draw and restored after.
 print("\n=== AVAIL (wake+availability+electrical losses) sensitivity: ENPV, marginalised MC, NetZero_Tilt weighting, N=500 ===")
 avail_values = [0.85, M.AVAIL, 0.95]
 _orig_wind_cf_by_year = M.WIND_CF_BY_YEAR
@@ -414,7 +454,16 @@ for sname in Strategies_2:
         f"{avail_sensitivity[av][sname] / 1e6:>14.1f}" for av in avail_values))
 
 # ---- 15. GBM_SHOCK_CORR sensitivity: measured (active) vs placeholder ---
-# see docs/notes/Reporting/Sensitivities.md#gbm_shock_corr-sensitivity-method
+# GBM_SHOCK_CORR is now measured from data, not the original hand-picked
+# guess (PLACEHOLDER_CORR_MATRIX) -- this quantifies that swap's ENPV effect.
+# Unlike every sweep above, this one changes how the correlated paths are
+# drawn, not just how Run_Strategy scores a fixed set of paths -- but it's
+# still fully reconstructable from the cache: since draw_z = z_indep @
+# L_measured.T and L_measured = cholesky(GBM_SHOCK_CORR) is known,
+# z_indep = solve(L_measured, draw_z.T).T recovers the INDEPENDENT shock
+# block exactly, then re-correlating that same z_indep under either
+# candidate matrix isolates the correlation structure's effect from draw
+# noise, without redrawing.
 print("\n=== GBM_SHOCK_CORR sensitivity: measured (active) vs placeholder, ENPV, marginalised MC, NetZero_Tilt weighting, N=500 ===")
 corr_settings = {"placeholder": PLACEHOLDER_CORR_MATRIX, "measured": M.GBM_SHOCK_CORR}
 _L_measured = np.linalg.cholesky(M.GBM_SHOCK_CORR)
@@ -452,7 +501,16 @@ for sname in Strategies_2:
 
 # ---- 17. CAPEX_P90 breakeven: how much would cost-overrun tail risk ----
 # ---- need to shrink for commitment to reliably beat Do Nothing? --------
-# see docs/notes/Reporting/Sensitivities.md#capex_p90-breakeven-method-and-caveats
+# CAPEX_P90 is anchored to a single data point (SSEN's Sept 2024
+# Orkney-Caithness contract announcement -- a floor, not a realised outturn).
+# Do Nothing came out competitive with, and often ahead of, the rigid
+# strategies in the headline MC -- this asks how sensitive that is to
+# CAPEX_P90 specifically, holding CAPEX_MEDIAN (1.4x, itself unsourced)
+# fixed. Reuses the cache's scenario/wx_seq/z (index-paired with every other
+# sweep in this file) and reconstructs z_capex by inverting the stored
+# capex_mult, so this section is paired-draw-consistent with the rest of the
+# file (its numbers differ from an earlier pre-refactor version that used an
+# out-of-step draw order -- a deliberate change, not a bug).
 print("\n=== CAPEX_P90 breakeven vs Do Nothing, marginalised MC, NetZero_Tilt weighting, N=500 ===")
 CAPEX_SWEEP_STRATS = list(ALL_STRATEGIES.keys())   # Do Nothing + Baseline + Staged + Flexible + Flexible 4-Stage + Flexible 1-Stage (Cost-Aware)
 _capex_mu_fixed = np.log(M.CAPEX_MEDIAN)
@@ -516,7 +574,15 @@ plt.close(fig)
 
 # ---- 18. Cost-aware Main Link: does gating on the noisy early capex -----
 # ---- estimate add value ON TOP OF the existing demand-only trigger? -----
-# see docs/notes/Reporting/Sensitivities.md#cost-aware-main-link-sweep-motivation
+# Demand/price/background GBM volatility, not capex overrun, was found to be
+# the dominant driver of Baseline's underperformance vs Do Nothing. This asks
+# the natural follow-up for "Flexible 1-Stage" (already demand-aware): does
+# ALSO gating the build decision on the noisy early capex_mult estimate
+# capture further incremental value, or is demand-awareness already doing
+# the useful work? cost_cap has no real-world anchor, so it's swept rather
+# than guessed; 10.0 is a de facto "unconstrained" control (above virtually
+# every realisable capex_estimate draw, so the AND-gate never blocks --
+# should reproduce plain "Flexible 1-Stage" almost exactly).
 print("\n=== Cost-aware Main Link (cost_cap sweep) vs Flexible vs Do Nothing: "
       "ENPV, marginalised MC, NetZero_Tilt weighting, N=500 ===")
 cost_cap_values = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0, 10.0]

@@ -48,10 +48,9 @@ harder, see `STAGED_LINK_FIXED_PER_STAGE_SWEEP`.
 £/MW for stage `stage_index` (1-indexed). Stage 1 always pays `base_permw`
 un-discounted — learning only applies to later stages.
 
-- `mode='scalar'`: `variable_permw(n) = base_permw * f**(n-1)`, `f=learning_param<1`.
-- `mode='wright'`: Wright's law on cumulative MW built before this stage —
-  `variable_permw(n) = base_permw * (cum_mw_before_stage/MW0)**(-b)`,
-  `b = -log2(1-LR)`, `LR=learning_param`, `MW0=stage_sizes[0]`.
+Wright's law on cumulative MW built before this stage —
+`variable_permw(n) = base_permw * (cum_mw_before_stage/MW0)**(-b)`,
+`b = -log2(1-LR)`, `LR=learning_param`, `MW0=stage_sizes[0]`.
 
 ## StagedLinkStage: capex_mult semantics
 

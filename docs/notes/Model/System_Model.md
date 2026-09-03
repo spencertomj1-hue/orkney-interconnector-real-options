@@ -22,32 +22,6 @@ False: `Results.py`'s capture block is skipped entirely — no file written, no 
 
 Turned ON (True): so a future full `Results.py` run keeps `Extra/ScenarioDiscovery/mc_draws.csv` in sync with `headline_mc.pkl` automatically, rather than the two silently drifting apart the way `headline_mc.pkl` itself once did against a stale `INCLUDE_WIND_BUILDOUT` assumption. The CSV was regenerated for the current link-only, no-wind default via a standalone replay (matching every other cache-replay script this session), not by running `Results.py` in full — the stale (with-wind, pre-`INCLUDE_WIND_BUILDOUT`-flip, pre-`npv_proxy`-fix) CSV was backed up to `Extra/ScenarioDiscovery/mc_draws_stale_withwind_aug20.csv.bak` first.
 
-## Scope 1 switch: WIND_AS_OPTION
-
-Is Stage1/2 wind an exercisable option, or exogenous background generation identical in every strategy? NOTE: whether Stage1/2 wind exists in the model AT ALL is a SEPARATE switch, `INCLUDE_WIND_BUILDOUT` — this one only decides HOW it enters the model, given that it exists. Headline default is now `INCLUDE_WIND_BUILDOUT=False`, so most of this comment's "wind is added..." description does not apply until that flag is set back to True.
-
-Default False (Scope 1): the ONLY exercisable option anywhere in the model is the interconnector (link) itself. Stage1/2 wind is added directly to generation capacity every year from its fixed build year onward — the SAME capacity, on the SAME schedule, for every strategy including Do Nothing (see the block in `Run_Strategy` gated on this flag). It is added the same way DFES background generation already is (a plain addition to caps, not a Decision/FiredDecision) — it earns no CFD revenue and carries no capex/opex, matching the treatment background growth already gets. This removes wind timing as a confound in paired-draw strategy comparisons: at a fixed draw index every strategy previously could see DIFFERENT wind capacity (Do Nothing: none ever; Baseline/Staged: fixed from 2029/2030; Flexible/Flexible 4-Stage/Flexible 1-Stage (Cost-Aware): only if/when their own link rule fired) even though demand/price/weather/background were already paired — see the recon diagnostic that confirmed this before this switch was added.
-
-True: reverts to the ORIGINAL behaviour exactly — wind stays a Decision in Baseline/Staged (fixed, unconditional, capex/opex/CFD charged) and a Rule in the three flexible strategies (gated on the link's own prereq firing, capex/opex/CFD charged once it fires). Kept only so results can be reverted/compared — not the Scope 1 recommendation.
-
-ASSUMPTION, flagged: the 2029/2030 build years and the exact MW figures used below (from `Stage1_Wind_Buildout`/`Stage2_Wind_Buildout` in `Options.py`) were never independently sourced in this codebase for those SPECIFIC years — `Options.py`'s class comments name the real projects (Costa/Hesta/Hammars Hill; OIC Community Wind Farm) but not a cited build-year schedule. Carried over unchanged from the years `System_Model._baseline` already used, not a new citation.
-
-## INCLUDE_WIND_BUILDOUT switch
-
-Does Stage1/2 wind exist in the model AT ALL — independent of `WIND_AS_OPTION` (which only decides HOW wind enters the model, given that it exists).
-
-HEADLINE DEFAULT (changed from True -> False): Stage1/2 wind is REMOVED from every strategy and from `Run_Strategy`'s exogenous-background block — `caps["Wind"]` never gets the +45.1MW/+86.4MW addition, `background_gen_mw` never sees it either, so the ONLY generation growth left is the DFES-sourced `BACKGROUND[scenario]` pipeline (Onshore wind/Solar PV/Marine/Hydropower) plus the pre-existing fleet.
-
-WHY: with wind included, its FIXED, scenario-invariant 2029/2030 schedule (+131.5MW by 2030, identical in every draw) was found to swamp `background_gen_mw`'s DFES-driven component in exactly the years the Main Link trigger evaluates — by 2030 it alone exceeds `MAIN_LINK_BG_GEN_THRESHOLD` (135MW) regardless of DFES scenario, collapsing every flexible strategy's link-build timing to near-identical years (std ~0.6yr) and making the modelled option value ~0 by construction, not economics. Checked directly (all 4 flexible/rigid strategies, seed=42, N=2000, NetZero_Tilt): removing wind entirely REVERSES the whole strategic ranking — Flexible 1-Stage (Cost-Aware) becomes the best strategy (ENPV £175.2m vs £134.7m with wind) and Baseline the worst (£28.0m vs £313.5m with wind), with genuine scenario-differentiated build timing (Falling Behind fires in only 60.5% of draws, mean build year spread std=3.85yr vs ~0.6yr before).
-
-True: reverts to the ORIGINAL behaviour — `Stage1_Wind_Buildout`/`Stage2_Wind_Buildout` added somewhere (as exogenous background if `WIND_AS_OPTION=False`, or as Decisions/Rules if True) in every strategy. Kept only so results can be reverted/compared. Set like `DISCOUNT_MODE`/`RATE` — a plain module attribute, toggled directly (`M.INCLUDE_WIND_BUILDOUT = True`) around the calls that need it, not threaded through every function signature, since it's a model-wide characteristic every strategy shares (same reasoning `WIND_AS_OPTION`'s own comment gives for adding wind identically everywhere).
-
-CAVEAT: the incremental-LCOE metric (£/MWh vs Do Nothing) becomes numerically unstable with wind removed — Do Nothing's own delivered energy shrinks toward the same order as the link-enabled strategies', so the ΔEnergy denominator goes to ~0 in many draws (values in the millions, division-by-zero warnings). ENPV/P(NPV<0)/build-year distributions are unaffected; don't trust the LCOE column/plots without checking this first.
-
-## Wind background capacity and build year source
-
-Capacity (MW) and fixed build year for each stage, read off the SAME `Options.py` classes the Decision/Rule path uses when `WIND_AS_OPTION=True` — single source of truth, no duplicated MW figures. Only `.Capacity()` is read here; capex/opex/CFD_Lifetime are irrelevant to background generation and deliberately not touched.
-
 ## Green Book discount rate schedule
 
 HM Treasury Green Book's actual declining long-term discount rate schedule, current as of the 2026 Green Book (a rate review is underway but the 2026 edition retains this schedule pending its outcome). `(year_upper_bound_inclusive, rate)` pairs, rate applies to appraisal years 1..upper at that band; only the first two bands are ever reached by this model's 33-year (2019-2051) horizon.
@@ -73,10 +47,6 @@ Bias-corrected Renewables.ninja. Restricted to years with matched ANM demand dat
 ## compute_wind_cf_by_year: per-year CF library
 
 `{year: gross CF array}` for every `WEATHER_YEARS`, at the given `AVAIL` (wake + availability + electrical losses). Factored out of the module-level `WIND_CF_BY_YEAR` computation so `Results.py`'s `AVAIL` sensitivity can recompute the library at an alternate `AVAIL` and swap it in — unlike `CONSTRAINT_COST`, `WIND_CF_BY_YEAR` is baked in once, not read fresh per year, so it has to be recomputed wholesale.
-
-## Weather-year sampler: IID vs AR1 persistence
-
-IID sampling gives trailing-window rules no persistent signal (a calm year is as likely to follow calm as windy), so option value comes out ~0 by construction, not because rules are uninformative. `WX_MODE` selects the sampler; default `"iid"` keeps old seeded results reproducing exactly.
 
 ## Noisy early capex_mult estimate for the cost-aware rule
 
@@ -164,10 +134,6 @@ An alternative to `background_gen_mw` for `Decision_Rules.make_main_link_rule` (
 
 `GROWTH_INDEX_BLEND_WEIGHT`: arbitrary 50/50 split between the two terms — no independent justification for this weighting, tune directly.
 
-## Strategy factories: wind gating on WIND_AS_OPTION
-
-Factories, not pre-built lists: each call constructs fresh assets so `capex_mult` can vary per draw without state leaking between runs. Wind Decisions gated on `WIND_AS_OPTION` — default False (Scope 1): wind is added as exogenous background in `Run_Strategy` instead (identical every strategy, see `WIND_AS_OPTION`'s own comment), so it is NOT added here.
-
 ## _staged: fixed-schedule staged interconnector twin
 
 Fixed-schedule twin of the rule-based staged interconnector build (see `_flexible_staged` / `Decision_Rules.make_staged_link_strategy`): same 4 blocks, same per-stage costs (`fixed_per_stage` + learning-curve-discounted `variable_permw`), same architecture — just dropped as fixed-year Decisions instead of gated on `background_gen_mw`. `capex_mult` is the single passed-in project-wide draw, applied identically to every stage (rigid strategies don't read `state["capex_estimate"]` — that's a rule-only mechanism, see `StagedLinkRule`).
@@ -176,9 +142,9 @@ Fixed-schedule twin of the rule-based staged interconnector build (see `_flexibl
 
 Fixed/staged (rigid, `Strategies_2`) vs flexible (`Strategies_Flex`, below) is the same three-way design taxonomy — fixed, phased, flexible — [3] compares for PV capacity expansion, applied here to the interconnector instead.
 
-## Flexible strategies: wind gating, Stage 5
+## Flexible strategies
 
-Factories, same reasoning as `Strategies_2` (fresh instances per call, no state leaks between draws). Headline (`WIND_AS_OPTION=True` only): Stage1/Stage2 wind are Rules gated on `prereq="NewLink"` (leads 1yr/2yr) — they only build once the link is live, never if it doesn't fire. Default False (Scope 1): wind is exogenous background instead (see `WIND_AS_OPTION`'s own comment), so it is NOT added here — the link stays the only exercisable option.
+Factories, same reasoning as `Strategies_2` (fresh instances per call, no state leaks between draws).
 
 ## _flexible: Fix A knobs
 
@@ -219,12 +185,6 @@ DFES background, excluding Decision-modelled assets. Subtract the existing fleet
 ## Fix A v3: dfes_background_gen_mw isolation
 
 The DFES-only component of `background_gen_mw`, BEFORE the exogenous Stage1/2 wind background (below) is added. That wind addition is a FIXED, scenario-invariant schedule (same 2029/2030 MW in every strategy, every draw) that empirically dominates `background_gen_mw`'s own early trajectory — by 2030 it alone contributes ~131.5MW, more than the entire DFES pipeline across ANY of the 4 scenarios at that point (52-59MW), so it swamps the genuinely-uncertain DFES signal in exactly the years the Main Link trigger would fire. This series isolates the part that actually carries cross-scenario information.
-
-## Scope 1: wind as exogenous background in Run_Strategy
-
-See `WIND_AS_OPTION`'s own comment above this function. Added the same way DFES background is, straight into `caps` -> it competes for link capacity and any curtailment still shows up as cost, same as any other background generation — and into `state["background_gen_mw"]` too, so the Main Link / staged-link trend-projected triggers still see it as part of total generation growth.
-
-That second part is a deliberate choice, not just bookkeeping: Ofgem's real 135MW condition is a TOTAL generation figure, and `DFES_Gen.py` already excludes these MW from the published background pipeline specifically because they used to be modelled as Decisions (see that file's `DECISION_MW` comment) — leaving them out of the trigger signal here would understate true generation growth, not just remove wind's own optionality. No capex/opex/CFD — this is a plain capacity addition, never a Decision/FiredDecision, so it never enters those accounting loops.
 
 ## growth_index: per-year computation
 

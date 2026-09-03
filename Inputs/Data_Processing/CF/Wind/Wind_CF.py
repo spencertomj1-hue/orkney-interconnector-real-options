@@ -1,4 +1,6 @@
-# Wind CF data source: see docs/notes/Inputs/Data_Processing/CF/Wind/Wind_CF.md#wind-cf-data-source
+# Loads Renewables.ninja hourly wind capacity-factor data for Orkney, 2019
+# (58.983, -2.960, MERRA-2, Vestas V90 2000, 80m hub). Capacity is set to 1kW
+# so the output is numerically the capacity factor (0-1).
 
 import numpy as np
 import pandas as pd
