@@ -1,12 +1,15 @@
 # PRIM scenario-discovery pipeline: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#overview
 
 import os
+import numpy as np
 import pandas as pd
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from ema_workbench.analysis import prim
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 SD_DIR = os.path.join(THIS_DIR, "Extra")
+HEADLINE_DIR = os.path.join(THIS_DIR, "Main_Plots")  # renamed from Headline_Plots outside this session
 MC_DRAWS_CSV = os.path.join(SD_DIR, "mc_draws.csv")
 
 # OUTCOME definition -- pick the one matching your P(loss) definition.
@@ -23,6 +26,7 @@ OUTCOME_DISPLAY = {
     "npv_below_zero": "loss defined as NPV < £0",
     "worse_than_do_nothing": "loss defined as NPV worse than Do Nothing",
     "lcoe_above_threshold": f"loss defined as incremental LCOE > £{LCOE_FAIL_THRESHOLD:.0f}/MWh vs Do Nothing",
+    "regret": "regret vs best of the 4 build strategies (excl. Do Nothing)",
 }
 
 # STRATEGY_TO_COL: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#strategy_to_col-strategy-selection-and-column-naming-convention
@@ -59,6 +63,23 @@ PAIRED_DRAWS = True
 # NEVER_CROSSED_YEAR_SENTINEL: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#never_crossed_year_sentinel
 NEVER_CROSSED_YEAR_SENTINEL = 2052
 
+# DROP_TRIGGER_DRIVERS: year_bg135_raw_crossed and background_terminal_mw are
+# crossing-time/level features of background_gen_mw, which IS the flexible
+# strategies' exercise trigger (see Model/Decision_Rules.py make_main_link_rule
+# / make_staged_link_strategy) -- including them in the PRIM driver set for a
+# flexible strategy risks explaining the loss region with a near-tautology of
+# its own decision rule. When True, both are dropped from the fit for flexible
+# strategies only; rigid strategies (Baseline, Fixed 4-Stage) have no such
+# circularity and always keep the full driver set.
+DROP_TRIGGER_DRIVERS = False
+TRIGGER_DRIVER_COLS = ["year_bg135_raw_crossed", "background_terminal_mw"]
+FLEXIBLE_STRATEGIES = {"Flexible 1-Stage", "Flexible 4-Stage", "Flexible 1-Stage (Cost-Aware)"}
+
+# NO_BOX_DENSITY_THRESHOLD: below this, PRIM found a box but it isn't actually
+# separating losses from profits well enough to report as a finding -- see
+# run_prim_for_strategy's post-find_box() check.
+NO_BOX_DENSITY_THRESHOLD = 0.5
+
 
 def load_data():
     if not os.path.exists(MC_DRAWS_CSV):
@@ -93,18 +114,82 @@ def compute_loss_flag(df, value_col, outcome):
     raise ValueError(f"unknown OUTCOME {outcome!r}")
 
 
+# REGRET_NPV_COLS / REGRET_STRATEGIES / compute_regret: regret is defined only
+# over the 4 headline build strategies -- npv_do_nothing is deliberately
+# excluded from the max(). Do Nothing isn't one of the 2x2 choices in Plot 1/
+# Plot 2, and an empty-cable draw's NPV would otherwise swamp regret with a
+# comparison that has nothing to do with choosing among the 4 build strategies.
+REGRET_STRATEGIES = ["Baseline", "Fixed 4-Stage", "Flexible 1-Stage", "Flexible 4-Stage"]
+REGRET_NPV_COLS = [STRATEGY_TO_COL[s] for s in REGRET_STRATEGIES]
+
+
+def compute_regret(df, value_col):
+    # npv_* columns in mc_draws.csv are raw £ (min ~-9e8, max ~1.3e9 -- matches
+    # the Results/target_curves NPV chart's -£750m..£1000m range), not £m --
+    # divide here so every downstream £m label (prints, box_summary.csv,
+    # colorbar, frontier plot) is correct without a conversion at each call site.
+    best = df[REGRET_NPV_COLS].max(axis=1)
+    return ((best - df[value_col]) / 1e6).clip(lower=0)
+
+
 def run_prim_for_strategy(name, value_col, df, X):
     y = compute_loss_flag(df, value_col, OUTCOME)
     n_pos = int(y.sum())
     print(f"\n=== PRIM: {name} (outcome={OUTCOME}, loss cases = {n_pos}/{len(y)} = {n_pos/len(y):.1%}) ===")
 
-    p = prim.Prim(X, y, peel_alpha=PEEL_ALPHA, paste_alpha=PASTE_ALPHA, mass_min=MASS_MIN)
+    X_fit = X
+    if DROP_TRIGGER_DRIVERS and name in FLEXIBLE_STRATEGIES:
+        dropped = [c for c in TRIGGER_DRIVER_COLS if c in X_fit.columns]
+        X_fit = X_fit.drop(columns=dropped)
+        print(f"  DROP_TRIGGER_DRIVERS: dropped {dropped} (circular w/ {name}'s exercise trigger)")
+
+    # X/y are drawn from mc_draws.csv, whose `scenario` column was sampled with
+    # p=SCENARIO_WEIGHTS["NetZero_Tilt"] at MC-cache build time (Reporting/Results.py:141)
+    # -- the tilt is already embedded in these 2000 draws, so this fit is unweighted
+    # only in the sense of not re-weighting on top of that; no separate reweighting needed.
+    p = prim.Prim(X_fit, y, peel_alpha=PEEL_ALPHA, paste_alpha=PASTE_ALPHA, mass_min=MASS_MIN)
     box = p.find_box()
 
     final_id = box.peeling_trajectory.index[-1]
     print(f"  coverage={box.coverage:.3f}  density={box.density:.3f}  "
           f"n_points={int(box.peeling_trajectory.loc[final_id, 'n'])}  res_dim={box.res_dim}")
     box.inspect(final_id)
+    if box.density < NO_BOX_DENSITY_THRESHOLD:
+        print(f"  no separable loss region (density={box.density:.3f}, n_loss={n_pos} diffuse)")
+
+    return box
+
+
+def run_regret_prim_for_strategy(name, value_col, df, X):
+    regret = compute_regret(df, value_col)
+    full_mean = float(regret.mean())
+    print(f"\n=== Regret RegressionPrim: {name} (mean regret over full population = £{full_mean:.2f}m) ===")
+
+    X_fit = X
+    if DROP_TRIGGER_DRIVERS and name in FLEXIBLE_STRATEGIES:
+        dropped = [c for c in TRIGGER_DRIVER_COLS if c in X_fit.columns]
+        X_fit = X_fit.drop(columns=dropped)
+        print(f"  DROP_TRIGGER_DRIVERS: dropped {dropped} (circular w/ {name}'s exercise trigger)")
+
+    p = prim.RegressionPrim(X_fit, regret.to_numpy(), peel_alpha=PEEL_ALPHA, paste_alpha=PASTE_ALPHA,
+                             mass_min=MASS_MIN, maximization=True)
+    box = p.find_box()
+
+    print(f"  box mean regret=£{float(box.mean):.2f}m  mass={float(box.mass):.3f}  res_dim={box.res_dim}")
+    box.inspect(box.peeling_trajectory.index[-1])
+
+    # Maximization tripwire (don't trust the flag blind): ema_workbench's
+    # RegressionPrim.__init__ carries `self._maximization = maximization  # fixme
+    # this is not working correctly` on its own maximization param
+    # (ema_workbench/analysis/prim.py:1983). If the selected box's mean regret
+    # isn't actually higher than the full-population mean, the flag found a
+    # LOW-regret box instead of a high-regret one -- halt before any output is
+    # written rather than emit a mislabelled box.
+    if not (box.stats["mean"] > full_mean):
+        raise RuntimeError(
+            f"MAXIMIZATION TRIPWIRE FAILED for {name}: box.stats['mean']=£{box.stats['mean']:.2f}m is "
+            f"not greater than the full-population mean regret (£{full_mean:.2f}m). RegressionPrim's "
+            f"maximization flag may be inverted -- halting, no plots emitted.")
 
     return box
 
@@ -274,6 +359,247 @@ def plot_cross_strategy_comparison(boxes, dims=None, out_name="cross_strategy_co
     return path
 
 
+# PLOT 1 -- supersedes the old plot_price_capex_scatter_by_strategy (same
+# price x capex axes, same box-overlay logic) with continuous regret colour
+# and a 2x2 layout, one panel per headline build strategy. Not standalone --
+# takes df/boxes/regret_boxes from __main__ rather than refitting PRIM itself,
+# since __main__ already has both the binary and regret fits in hand.
+def plot_loss_regret_scatter_by_strategy(df, boxes, regret_boxes, out_name="loss_regret_scatter_by_strategy"):
+    strategies = REGRET_STRATEGIES   # the 4 headline build strategies, in 2x2 order
+    assert len(strategies) == 4, f"expected 4 strategies for a 2x2 layout, got {strategies}"
+
+    # Shared colour scale across all 4 panels. Regret is zero-inflated (=0 for
+    # whichever strategy is best on a given draw); log1p keeps those zeros at
+    # the bottom of the scale while compressing the long positive tail so the
+    # non-zero spread stays visible rather than a pale field with one dark spike.
+    all_regret = pd.concat([compute_regret(df, STRATEGY_TO_COL[s]) for s in strategies])
+    vmax = float(np.log1p(all_regret).max())
+    norm = mcolors.Normalize(vmin=0.0, vmax=vmax)
+    cmap = plt.get_cmap("magma")
+
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 9.5), facecolor=CHART_SURFACE, sharex=True, sharey=True)
+    axes_flat = axes.flatten()
+
+    for ax, name in zip(axes_flat, strategies):
+        value_col = STRATEGY_TO_COL[name]
+        regret = compute_regret(df, value_col)
+        c = np.log1p(regret)
+
+        ax.scatter(df["price_terminal_gbp_mwh"], df["capex_mult"], c=c, cmap=cmap, norm=norm,
+                   s=10, alpha=0.85, linewidths=0, zorder=2)
+
+        # box overlay: BINARY-loss PRIM box only, only where that strategy's
+        # binary density clears NO_BOX_DENSITY_THRESHOLD -- never a regret-box
+        # overlay (regret has no equivalent separability concept).
+        binary_box = boxes[name]
+        if binary_box.density >= NO_BOX_DENSITY_THRESHOLD:
+            bounds = box_bounds_dict(binary_box)
+            full = binary_box.box_lims[0]
+            x_lo, x_hi = bounds.get("price_terminal_gbp_mwh",
+                                     (float(full["price_terminal_gbp_mwh"].iloc[0]), float(full["price_terminal_gbp_mwh"].iloc[1])))
+            y_lo, y_hi = bounds.get("capex_mult",
+                                     (float(full["capex_mult"].iloc[0]), float(full["capex_mult"].iloc[1])))
+            ax.add_patch(plt.Rectangle((x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
+                                        fill=False, edgecolor=CHART_INK, linewidth=2, zorder=3))
+            cause = "sharp corner" if name in ("Baseline", "Fixed 4-Stage") else "still separable"
+        else:
+            ax.text(0.03, 0.03, "no separable loss region", transform=ax.transAxes,
+                    fontsize=8, color=CHART_INK_MUTED, ha="left", va="bottom", style="italic")
+            cause = "dispersed, no box"
+
+        # cause as an in-axes annotation, not appended to the title -- a long
+        # cause string (esp. on the demand x generation variant) can be wider
+        # than one 2x2 column, and titles don't wrap, so they'd overflow into
+        # the neighbouring panel regardless of tight_layout/subplot spacing.
+        ax.set_xscale("log")
+        ax.set_facecolor(CHART_SURFACE)
+        ax.set_title(name, fontsize=11, color=CHART_INK, fontweight="bold")
+        ax.text(0.03, 0.90, cause, transform=ax.transAxes, fontsize=8.5, color=CHART_INK_MUTED,
+                ha="left", va="top", style="italic")
+        ax.tick_params(colors=CHART_INK_MUTED, labelsize=8)
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+
+    for ax in axes[-1, :]:
+        ax.set_xlabel("Terminal wholesale price, £/MWh", fontsize=9, color=CHART_INK_MUTED)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Capex overrun multiplier, x", fontsize=9, color=CHART_INK_MUTED)
+
+    fig.suptitle("Where strategies lose money -- rigid strategies fail at a sharp price/capex corner,\n"
+                 "flexible strategies fail more diffusely",
+                 fontsize=13, color=CHART_INK, fontweight="bold", y=1.02)
+
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cbar = fig.colorbar(sm, ax=axes, shrink=0.8, pad=0.02)
+    cbar.set_label("log1p(regret vs best build strategy), £m", fontsize=9, color=CHART_INK_MUTED)
+
+    handles = [plt.Line2D([0], [0], color=CHART_INK, linewidth=2,
+                          label=f"Binary-loss PRIM box (density ≥ {NO_BOX_DENSITY_THRESHOLD})")]
+    fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.01), frameon=False, fontsize=9)
+    fig.tight_layout(rect=[0, 0.03, 0.9, 0.93])
+
+    path = os.path.join(HEADLINE_DIR, f"{out_name}.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=CHART_SURFACE)
+    plt.close(fig)
+    return path
+
+
+# PLOT A -- same design as plot_loss_regret_scatter_by_strategy, demand x
+# background axes instead of price x capex. Colour scale: log1p(regret), no
+# 95th-pct clip -- plot_loss_regret_scatter_by_strategy doesn't clip either
+# (see its own comment), and since regret is a per-draw/per-strategy scalar
+# independent of which 2 dims it's plotted against, recomputing the norm here
+# from the same compute_regret() calls yields the numerically identical scale
+# -- "reuse the exact norm" is satisfied by construction, not by caching.
+# Panel titles are derived from box_bounds_dict, not hardcoded: both dims
+# restricted -> "separable"; one unrestricted -> "partial (<dim> unrestricted)";
+# no box (density < NO_BOX_DENSITY_THRESHOLD) -> "dispersed, no box".
+def plot_loss_regret_scatter_demand_generation(df, boxes, regret_boxes,
+                                                out_name="loss_regret_scatter_demand_generation"):
+    strategies = REGRET_STRATEGIES
+    assert len(strategies) == 4, f"expected 4 strategies for a 2x2 layout, got {strategies}"
+
+    all_regret = pd.concat([compute_regret(df, STRATEGY_TO_COL[s]) for s in strategies])
+    vmax = float(np.log1p(all_regret).max())
+    norm = mcolors.Normalize(vmin=0.0, vmax=vmax)
+    cmap = plt.get_cmap("magma")
+
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 9.5), facecolor=CHART_SURFACE, sharex=True, sharey=True)
+    axes_flat = axes.flatten()
+
+    for ax, name in zip(axes_flat, strategies):
+        value_col = STRATEGY_TO_COL[name]
+        regret = compute_regret(df, value_col)
+        c = np.log1p(regret)
+
+        ax.scatter(df["demand_terminal_gwh"], df["background_terminal_mw"], c=c, cmap=cmap, norm=norm,
+                   s=10, alpha=0.85, linewidths=0, zorder=2)
+
+        binary_box = boxes[name]
+        if binary_box.density >= NO_BOX_DENSITY_THRESHOLD:
+            bounds = box_bounds_dict(binary_box)
+            full = binary_box.box_lims[0]
+            demand_restricted = "demand_terminal_gwh" in bounds
+            bg_restricted = "background_terminal_mw" in bounds
+            x_lo, x_hi = bounds.get("demand_terminal_gwh",
+                                     (float(full["demand_terminal_gwh"].iloc[0]), float(full["demand_terminal_gwh"].iloc[1])))
+            y_lo, y_hi = bounds.get("background_terminal_mw",
+                                     (float(full["background_terminal_mw"].iloc[0]), float(full["background_terminal_mw"].iloc[1])))
+            ax.add_patch(plt.Rectangle((x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
+                                        fill=False, edgecolor=CHART_INK, linewidth=2, zorder=3))
+            if demand_restricted and bg_restricted:
+                cause = "separable"
+            elif demand_restricted:
+                cause = "partial (generation unrestricted)"
+            elif bg_restricted:
+                cause = "partial (demand unrestricted)"
+            else:
+                cause = "partial (both unrestricted)"   # box exists (other dims restrict it) but not on these 2
+        else:
+            ax.text(0.03, 0.03, "no separable loss region\n(price×capex or demand×generation)",
+                    transform=ax.transAxes, fontsize=8, color=CHART_INK_MUTED, ha="left", va="bottom",
+                    style="italic")
+            cause = "dispersed, no box"
+
+        # cause as an in-axes annotation, not appended to the title -- see
+        # plot_loss_regret_scatter_by_strategy's identical comment: these
+        # cause strings are long enough to overflow a 2x2 column if titled.
+        ax.set_yscale("log")
+        ax.set_facecolor(CHART_SURFACE)
+        ax.set_title(name, fontsize=11, color=CHART_INK, fontweight="bold")
+        ax.text(0.03, 0.90, cause, transform=ax.transAxes, fontsize=8.5, color=CHART_INK_MUTED,
+                ha="left", va="top", style="italic")
+        ax.tick_params(colors=CHART_INK_MUTED, labelsize=8)
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+
+    for ax in axes[-1, :]:
+        ax.set_xlabel("Terminal demand, GWh", fontsize=9, color=CHART_INK_MUTED)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Terminal background generation, MW", fontsize=9, color=CHART_INK_MUTED)
+
+    fig.suptitle("Where strategies lose money -- demand x background-generation view\n"
+                 "(titles reflect what each strategy's box actually restricts on these axes)",
+                 fontsize=13, color=CHART_INK, fontweight="bold", y=1.02)
+
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cbar = fig.colorbar(sm, ax=axes, shrink=0.8, pad=0.02)
+    cbar.set_label("log1p(regret vs best build strategy), £m", fontsize=9, color=CHART_INK_MUTED)
+
+    handles = [plt.Line2D([0], [0], color=CHART_INK, linewidth=2,
+                          label=f"Binary-loss PRIM box (density ≥ {NO_BOX_DENSITY_THRESHOLD}), projected onto demand x generation")]
+    fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.01), frameon=False, fontsize=9)
+
+    path = os.path.join(HEADLINE_DIR, f"{out_name}.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=CHART_SURFACE)
+    plt.close(fig)
+    return path
+
+
+# PLOT 2 -- PRIM frontier. Panel 1: binary density vs coverage, the canonical
+# Friedman & Fisher PRIM trade-off curve. Panel 2: continuous mean-regret-in-
+# box vs box mass -- RegressionPrimBox exposes no coverage/density (binary-
+# only concepts, see Phase 1 report (c)), so mass is the natural x-axis.
+# Restricted to the 4 headline strategies in both panels (only they have a
+# regret box, for a like-for-like comparison across the two panels).
+def plot_prim_frontier(boxes, regret_boxes, out_name="prim_frontier"):
+    strategies = REGRET_STRATEGIES
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.4), facecolor=CHART_SURFACE)
+
+    for i, name in enumerate(strategies):
+        color = STRATEGY_COLORS_HEX[i % len(STRATEGY_COLORS_HEX)]
+        traj = boxes[name].peeling_trajectory
+        ax1.plot(traj["coverage"], traj["density"], color=color, linewidth=1.5, alpha=0.85, zorder=2)
+        final_id = traj.index[-1]
+        cov, dens = traj.loc[final_id, "coverage"], traj.loc[final_id, "density"]
+        ax1.scatter([cov], [dens], color=color, s=70, zorder=3, edgecolor=CHART_INK, linewidth=0.8)
+        ax1.annotate(f"{name}\ncov={cov:.2f}, dens={dens:.2f}", (cov, dens),
+                     textcoords="offset points", xytext=(6, 6), fontsize=7.5, color=CHART_INK)
+
+    ax1.axhline(NO_BOX_DENSITY_THRESHOLD, color=CHART_INK_MUTED, linestyle="--", linewidth=1, zorder=1)
+    ax1.text(0.99, NO_BOX_DENSITY_THRESHOLD + 0.02, f"NO_BOX_DENSITY_THRESHOLD = {NO_BOX_DENSITY_THRESHOLD}",
+              transform=ax1.get_yaxis_transform(), fontsize=7, color=CHART_INK_MUTED, ha="right")
+    ax1.set_xlabel("Coverage", fontsize=10, color=CHART_INK_MUTED)
+    ax1.set_ylabel("Density", fontsize=10, color=CHART_INK_MUTED)
+    ax1.set_title("Binary loss: density vs coverage", fontsize=11, color=CHART_INK, fontweight="bold")
+    ax1.set_xlim(-0.02, 1.02)
+    ax1.set_ylim(-0.02, 1.02)
+    ax1.set_facecolor(CHART_SURFACE)
+    for spine in ("top", "right"):
+        ax1.spines[spine].set_visible(False)
+
+    for i, name in enumerate(strategies):
+        color = STRATEGY_COLORS_HEX[i % len(STRATEGY_COLORS_HEX)]
+        traj = regret_boxes[name].peeling_trajectory
+        ax2.plot(traj["mass"], traj["mean"], color=color, linewidth=1.5, alpha=0.85, zorder=2)
+        final_id = traj.index[-1]
+        mass, mean = traj.loc[final_id, "mass"], traj.loc[final_id, "mean"]
+        ax2.scatter([mass], [mean], color=color, s=70, zorder=3, edgecolor=CHART_INK, linewidth=0.8)
+        ax2.annotate(f"{name}\nmass={mass:.2f}, mean=£{mean:.1f}m", (mass, mean),
+                     textcoords="offset points", xytext=(6, 6), fontsize=7.5, color=CHART_INK)
+
+    ax2.set_xlabel("Box mass (support)", fontsize=10, color=CHART_INK_MUTED)
+    ax2.set_ylabel("Mean regret in box, £m", fontsize=10, color=CHART_INK_MUTED)
+    ax2.set_title("Regret: mean-in-box vs mass", fontsize=11, color=CHART_INK, fontweight="bold")
+    ax2.set_facecolor(CHART_SURFACE)
+    for spine in ("top", "right"):
+        ax2.spines[spine].set_visible(False)
+
+    handles = [plt.Line2D([0], [0], color=STRATEGY_COLORS_HEX[i % len(STRATEGY_COLORS_HEX)], linewidth=2, label=n)
+               for i, n in enumerate(strategies)]
+    fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.04), ncol=len(strategies),
+               frameon=False, fontsize=9)
+    fig.suptitle("PRIM peeling frontier -- binary loss (left) and continuous regret (right)",
+                 fontsize=13, color=CHART_INK, fontweight="bold", y=1.03)
+    fig.tight_layout()
+
+    path = os.path.join(HEADLINE_DIR, f"{out_name}.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=CHART_SURFACE)
+    plt.close(fig)
+    return path
+
+
 if __name__ == "__main__":
     df = load_data()
     X = prepare_inputs(df)
@@ -282,24 +608,48 @@ if __name__ == "__main__":
 
     boxes = {}
     for name, value_col in strategy_col_map().items():
-        box = run_prim_for_strategy(name, value_col, df, X)
-        boxes[name] = box
+        boxes[name] = run_prim_for_strategy(name, value_col, df, X)
+
+    # ---- regret RegressionPrim run (continuous outcome, alongside binary) ---
+    # Runs BEFORE any output is written (including the binary trajectory/box-
+    # graph outputs below): if run_regret_prim_for_strategy's maximization
+    # tripwire fires for any strategy, it raises and this script halts here --
+    # nothing gets saved this run, since Plot 1/2 depend on both binary and
+    # regret boxes together.
+    regret_boxes = {}
+    for name in REGRET_STRATEGIES:
+        regret_boxes[name] = run_regret_prim_for_strategy(name, STRATEGY_TO_COL[name], df, X)
+    print(f"\nMaximization tripwire passed for all {len(regret_boxes)} regret fits.")
+
+    # ---- binary trajectory / box-graph outputs (only reached past the tripwire) ----
+    for name, box in boxes.items():
         csv_path, tradeoff_png_path, box_png_path = save_trajectory(name, box)
         print(f"  trajectory -> {csv_path}")
         print(f"  trade-off plot -> {tradeoff_png_path}")
         print(f"  box graph -> {box_png_path}")
 
-    # ---- box summary table, all strategies ---------------------------------
+    # ---- box summary table, all strategies, both outcome types --------------
     summary_rows = []
     for name, box in boxes.items():
-        bounds = box_bounds_dict(box)
-        summary_rows.append({"strategy": name, "n_points": int(box.peeling_trajectory["n"].iloc[-1]),
-                              "coverage": box.coverage, "density": box.density,
+        # null bounds for a diffuse (density < NO_BOX_DENSITY_THRESHOLD) box --
+        # see run_prim_for_strategy's post-find_box() check.
+        bounds = None if box.density < NO_BOX_DENSITY_THRESHOLD else box_bounds_dict(box)
+        summary_rows.append({"strategy": name, "outcome_type": "binary",
+                              "n_points": int(box.peeling_trajectory["n"].iloc[-1]), "mass": float(box.mass),
+                              "coverage": box.coverage, "density": box.density, "mean": float(box.mean),
                               "n_restricted_dims": box.res_dim, "bounds": bounds})
+    for name, box in regret_boxes.items():
+        summary_rows.append({"strategy": name, "outcome_type": "regret",
+                              "n_points": int(box.peeling_trajectory["n"].iloc[-1]), "mass": float(box.mass),
+                              "coverage": None, "density": None, "mean": float(box.mean),
+                              "n_restricted_dims": box.res_dim, "bounds": box_bounds_dict(box)})
     summary_df = pd.DataFrame(summary_rows)
     summary_csv_path = os.path.join(SD_DIR, "box_summary.csv")
     summary_df.to_csv(summary_csv_path, index=False)
     print(f"\nBox summary table -> {summary_csv_path}")
+    headline_summary_csv_path = os.path.join(HEADLINE_DIR, "box_summary.csv")
+    summary_df.to_csv(headline_summary_csv_path, index=False)
+    print(f"Box summary table (Headline_Plots copy) -> {headline_summary_csv_path}")
 
     # ---- cross-strategy box comparison --------------------------------------
     if PAIRED_DRAWS:
@@ -312,7 +662,10 @@ if __name__ == "__main__":
                 bound = b.get(dim, "(unrestricted)")
                 print(f"    {name:<18} {bound}")
         # excluding Flexible 1-Stage (Cost-Aware) from the charts: see docs/notes/Reporting/ScenarioDiscovery/Scenario_Discovery.md#cross-strategy-comparison-excluding-flexible-1-stage-cost-aware-from-the-charts
-        plot_boxes = {name: box for name, box in boxes.items() if name != "Flexible 1-Stage (Cost-Aware)"}
+        # also excluding any strategy whose box is diffuse (density < NO_BOX_DENSITY_THRESHOLD) --
+        # its bounds are already null in box_summary.csv, so there's nothing meaningful to bar-chart.
+        plot_boxes = {name: box for name, box in boxes.items()
+                      if name != "Flexible 1-Stage (Cost-Aware)" and box.density >= NO_BOX_DENSITY_THRESHOLD}
 
         comparison_png_path = plot_cross_strategy_comparison(plot_boxes)
         if comparison_png_path:
@@ -328,3 +681,16 @@ if __name__ == "__main__":
         print("\n(draws are NOT paired -- cross-strategy box differences below may partly "
               "reflect sampling noise between independent draw streams, not a genuine "
               "strategy difference. Interpret with caution.)")
+
+    # ---- Plot 1: loss/regret scatter (supersedes plot_price_capex_scatter_by_strategy) ----
+    scatter_path = plot_loss_regret_scatter_by_strategy(df, boxes, regret_boxes)
+    print(f"\nLoss/regret scatter -> {scatter_path}")
+
+    # ---- Plot 2: PRIM frontier (binary density-coverage + regret mean-vs-mass) ----
+    frontier_path = plot_prim_frontier(boxes, regret_boxes)
+    print(f"PRIM frontier -> {frontier_path}")
+
+    # ---- Plot A: loss/regret scatter, demand x background-generation axes ---
+    # (frontier is axis-independent -- confirmed no Plot B needed, see report)
+    demand_gen_scatter_path = plot_loss_regret_scatter_demand_generation(df, boxes, regret_boxes)
+    print(f"Loss/regret scatter (demand x generation) -> {demand_gen_scatter_path}")

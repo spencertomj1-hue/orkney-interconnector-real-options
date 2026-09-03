@@ -17,6 +17,10 @@ from Model.Options import NewLink, Stage1_Wind_Buildout, Stage2_Wind_Buildout, S
 from Model.Decision_Rules import STAGED_LINK_THETA_SWEEP
 from Inputs.Data_Processing.Generation.GBM_Correlation import PLACEHOLDER_CORR_MATRIX
 
+# All plots this file produces are saved here.
+SENSITIVITIES_PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Sensitivities_Plots")
+os.makedirs(SENSITIVITIES_PLOTS_DIR, exist_ok=True)
+
 MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
                   "Methodology_4/Coding/Extra/MC_Cache/headline_mc.pkl")
 with open(MC_CACHE_PATH, "rb") as _f:
@@ -128,9 +132,8 @@ ax.set_ylabel("ΔENPV, £m")
 ax.set_title("Build early vs defer, mean across DFES scenarios")
 ax.legend(frameon=False)
 fig.tight_layout()
-fig.savefig("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-            "Methodology_4/Images/discount_sensitivity.png", dpi=200)
-plt.show()
+fig.savefig(os.path.join(SENSITIVITIES_PLOTS_DIR, "discount_sensitivity.png"), dpi=200)
+plt.close(fig)
 
 # ---- 7. weighting sensitivity: Equal (comparison vs the NetZero_Tilt --
 # ---- headline used everywhere else) -------------------------------------
@@ -221,9 +224,8 @@ ax.set_ylabel("ENPV, £m")
 ax.set_title("Scenario-weighting sensitivity — ENPV by strategy, NetZero_Tilt vs Equal")
 ax.legend(frameon=False)
 fig.tight_layout()
-fig.savefig("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-            "Methodology_4/Images/weighting_sensitivity.png", dpi=200)
-plt.show()
+fig.savefig(os.path.join(SENSITIVITIES_PLOTS_DIR, "weighting_sensitivity.png"), dpi=200)
+plt.close(fig)
 
 # ---- 9+10. RESIDUAL_ON_OVERRUN & CONSTRAINT_COST sensitivity, combined ----
 # see docs/notes/Reporting/Sensitivities.md#residual_on_overrun-and-constraint_cost-sensitivity-draw-sourcing
@@ -509,9 +511,8 @@ ax.set_title("Cost-overrun tail-risk breakeven: ENPV edge over Do Nothing vs CAP
              f"(N={N_SENS}, NetZero_Tilt weighting, CAPEX_MEDIAN=1.4x held fixed)", fontsize=11)
 ax.legend(frameon=False)
 fig.tight_layout()
-fig.savefig("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-            "Methodology_4/Images/capex_p90_breakeven.png", dpi=200)
-plt.show()
+fig.savefig(os.path.join(SENSITIVITIES_PLOTS_DIR, "capex_p90_breakeven.png"), dpi=200)
+plt.close(fig)
 
 # ---- 18. Cost-aware Main Link: does gating on the noisy early capex -----
 # ---- estimate add value ON TOP OF the existing demand-only trigger? -----

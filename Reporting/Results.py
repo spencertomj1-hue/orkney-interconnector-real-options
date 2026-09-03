@@ -15,6 +15,18 @@ import Model.Options as O
 from Model.System_Model import Run_Strategy, Strategies_2, Strategies_Flex, Scenarios
 from Model.Model_Components import Decision
 from Model.Options import NewLink, Stage1_Wind_Buildout, Stage2_Wind_Buildout
+from Model.Decision_Rules import MAIN_LINK_BG_GEN_THRESHOLD as _BG_THRESH
+
+# All plots this file produces are saved here (tables/CSVs are unaffected --
+# see PNZ_TABLE_DIR below, which stays where it was).
+RESULTS_PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Results_Plots")
+os.makedirs(RESULTS_PLOTS_DIR, exist_ok=True)
+
+# Waterfall/CVaR plots (added below) go alongside the scenario-discovery
+# headline plots per explicit instruction, not into RESULTS_PLOTS_DIR.
+SCENARIO_DISCOVERY_PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                             "ScenarioDiscovery", "Main_Plots")
+os.makedirs(SCENARIO_DISCOVERY_PLOTS_DIR, exist_ok=True)
 
 # ---- shared chart style ----------------------------------------------------
 # see docs/notes/Reporting/Results.md#shared-chart-style
@@ -238,6 +250,162 @@ if RUN_MC:
 
     print_metrics_table(marg_store, "NetZero_Tilt (rigid + flexible)", ALL_STRATEGIES)
 
+    # ---- value-of-flexibility waterfall (additive, new) ---------------------
+    # 2x2 design: staging (1-stage vs 4-stage) x optionality (rigid vs flexible).
+    # Source: marg_store (dict[str, np.ndarray], plain strategy-name keys, raw £,
+    # paired draws) -- NOT mc_draws.csv-style npv_* columns, per corrected
+    # instruction. Weighting: plain .mean()/np.percentile() on marg_store arrays
+    # only -- NetZero_Tilt is already embedded via the scenario sampling at
+    # line 147 (rng.choice(scen_names, p=scen_probs)), so this stays consistent
+    # with print_metrics_table's ENPV above without any reweighting step.
+    def compute_and_plot_flexibility_waterfall(marg_store, out_dir):
+        B, F, X1, X4 = (marg_store["Baseline"], marg_store["Fixed 4-Stage"],
+                         marg_store["Flexible 1-Stage"], marg_store["Flexible 4-Stage"])
+        enpv_B, enpv_F, enpv_X1, enpv_X4 = B.mean(), F.mean(), X1.mean(), X4.mean()  # raw £
+
+        print("\n=== Value-of-flexibility 2x2 ENPV grid (£m, NetZero_Tilt) ===")
+        print(f"{'':<12}{'1-stage':>14}{'4-stage':>14}")
+        print(f"{'rigid':<12}{enpv_B/1e6:>14.1f}{enpv_F/1e6:>14.1f}")
+        print(f"{'flexible':<12}{enpv_X1/1e6:>14.1f}{enpv_X4/1e6:>14.1f}")
+
+        total_premium = enpv_X4 - enpv_B
+        staging_first = [("Fixed - Baseline (staging, at rigid)", enpv_F - enpv_B),
+                          ("Flex4 - Fixed (optionality, at 4-stage)", enpv_X4 - enpv_F)]
+        optionality_first = [("Flex1 - Baseline (optionality, at 1-stage)", enpv_X1 - enpv_B),
+                              ("Flex4 - Flex1 (staging, at flexible)", enpv_X4 - enpv_X1)]
+        interaction = enpv_X4 - enpv_F - enpv_X1 + enpv_B
+
+        print("\n=== Decomposition paths (£m) ===")
+        print("Staging-first: Baseline -> Fixed 4-Stage -> Flexible 4-Stage")
+        for label, v in staging_first:
+            print(f"  {label}: {v/1e6:+.2f}")
+        print(f"  path total: {sum(v for _, v in staging_first)/1e6:+.2f}")
+        print("Optionality-first: Baseline -> Flexible 1-Stage -> Flexible 4-Stage")
+        for label, v in optionality_first:
+            print(f"  {label}: {v/1e6:+.2f}")
+        print(f"  path total: {sum(v for _, v in optionality_first)/1e6:+.2f}")
+        print(f"\nInteraction (non-additivity) = Flex4 - Fixed - Flex1 + Baseline = £{interaction/1e6:+.2f}m")
+
+        # Shapley (exact for 2 factors): each factor's effect = mean of its
+        # marginal contribution across both orderings.
+        shapley_staging = ((enpv_F - enpv_B) + (enpv_X4 - enpv_X1)) / 2
+        shapley_optionality = ((enpv_X1 - enpv_B) + (enpv_X4 - enpv_F)) / 2
+        shapley_sum = shapley_staging + shapley_optionality
+
+        print("\n=== Shapley decomposition (£m) ===")
+        print(f"  staging_effect (Shapley)     = £{shapley_staging/1e6:+.2f}m")
+        print(f"  optionality_effect (Shapley) = £{shapley_optionality/1e6:+.2f}m")
+        print(f"  sum of Shapley effects       = £{shapley_sum/1e6:+.2f}m")
+        print(f"  total premium (Flex4-Baseline) = £{total_premium/1e6:+.2f}m")
+        assert abs(shapley_sum - total_premium) < 1e-6, \
+            "Shapley staging+optionality should sum EXACTLY to total premium for 2 factors"
+
+        # Why the waterfall below has 2 additive bars, not 3: for exactly 2
+        # factors, Shapley splits the interaction 50/50 into both main effects
+        # already -- shapley_staging + shapley_optionality == total_premium
+        # exactly (assertion above). Stacking the raw `interaction` term on top
+        # of BOTH Shapley bars as a third additive segment would therefore
+        # overshoot the true Flex4 ENPV by one full interaction term (double-
+        # counting it). This is the "(or two Shapley values summing exactly to
+        # total premium)" framing offered alongside the original spec's 3-bar
+        # description -- taking it because the literal 3-bar version doesn't
+        # close. The interaction is still shown, not hidden: as a caption on
+        # the chart and printed above, quantifying how much of each Shapley
+        # bar is "really" cross-term rather than a pure main effect.
+        enpv_B_m, enpv_X4_m = enpv_B / 1e6, enpv_X4 / 1e6
+        shap_stage_m, shap_opt_m = shapley_staging/1e6, shapley_optionality/1e6
+
+        fig, ax = plt.subplots(figsize=(8.5, 5.8), facecolor=SURFACE)
+        # Reverted to spaced-out bars (not touching), but way thinner than the
+        # matplotlib default (0.8) -- and the connecting dashed lines are back,
+        # in a higher-contrast colour than the original AXIS_LINE grey.
+        x = np.arange(4)
+        bar_width = 0.5
+        labels = ["Baseline\nENPV", "+ staging effect\n(Shapley)",
+                  "+ optionality effect\n(Shapley)", "Flexible 4-Stage\nENPV"]
+
+        ax.bar(x[0], enpv_B_m, width=bar_width, color=INK_MUTED, zorder=2)
+        ax.bar(x[1], shap_stage_m, width=bar_width, bottom=enpv_B_m, color=CATEGORICAL[0], zorder=2)
+        ax.bar(x[2], shap_opt_m, width=bar_width, bottom=enpv_B_m + shap_stage_m, color=CATEGORICAL[1], zorder=2)
+        ax.bar(x[3], enpv_X4_m, width=bar_width, color=INK, zorder=2)
+
+        ax.plot([x[0], x[1]], [enpv_B_m, enpv_B_m], color=INK_SECONDARY, lw=1.3, ls="--", zorder=1)
+        ax.plot([x[1], x[2]], [enpv_B_m + shap_stage_m] * 2, color=INK_SECONDARY, lw=1.3, ls="--", zorder=1)
+        ax.plot([x[2], x[3]], [enpv_X4_m, enpv_X4_m], color=INK_SECONDARY, lw=1.3, ls="--", zorder=1)
+
+        for xi, y, txt in [(x[0], enpv_B_m, f"£{enpv_B_m:.0f}m"),
+                           (x[1], enpv_B_m + shap_stage_m, f"£{shap_stage_m:+.0f}m"),
+                           (x[2], enpv_X4_m, f"£{shap_opt_m:+.0f}m"),
+                           (x[3], enpv_X4_m, f"£{enpv_X4_m:.0f}m")]:
+            ax.annotate(txt, (xi, y), textcoords="offset points", xytext=(0, 5),
+                        ha="center", fontsize=9.5, color=INK, fontweight="bold")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=9)
+        ax.set_ylabel("ENPV, £m")
+        _titled(ax, "Value of flexibility -- Shapley decomposition of Flexible 4-Stage's ENPV premium",
+                "Staging x optionality, NetZero_Tilt weighting")
+        _style_ax(ax)
+
+        # ASCII "->" not unicode "→": Helvetica Neue (this file's savefig
+        # font) is missing the arrow glyph and silently drops it, not fine to render.
+        caption = (f"Staging-first: Baseline->Fixed {(enpv_F-enpv_B)/1e6:+.0f}m->Flex4 {(enpv_X4-enpv_F)/1e6:+.0f}m   |   "
+                   f"Optionality-first: Baseline->Flex1 {(enpv_X1-enpv_B)/1e6:+.0f}m->Flex4 {(enpv_X4-enpv_X1)/1e6:+.0f}m   |   "
+                   f"Interaction = £{interaction/1e6:+.1f}m (already split into both Shapley bars above)")
+        fig.text(0.5, -0.03, caption, ha="center", fontsize=7.5, color=INK_MUTED, wrap=True)
+        fig.tight_layout()
+
+        path = os.path.join(out_dir, "value_of_flexibility_waterfall.png")
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return path
+
+    waterfall_path = compute_and_plot_flexibility_waterfall(marg_store, SCENARIO_DISCOVERY_PLOTS_DIR)
+    print(f"\nValue-of-flexibility waterfall -> {waterfall_path}")
+
+    # ---- CVaR / Expected Shortfall (additive, new) ---------------------------
+    def compute_and_plot_cvar(marg_store, out_dir):
+        cvar_strategies = ["Baseline", "Fixed 4-Stage", "Flexible 1-Stage", "Flexible 4-Stage"]
+        print("\n=== VaR / CVaR (Expected Shortfall), NetZero_Tilt weighting (£m) ===")
+        print(f"{'Strategy':<20}{'ENPV':>9}{'VaR5':>9}{'CVaR5':>9}{'VaR10':>9}{'CVaR10':>9}")
+        cvar5_by_strategy = {}
+        for sname in cvar_strategies:
+            v = marg_store[sname]   # raw £, paired draws
+            enpv = v.mean()
+            var5 = np.percentile(v, 5)
+            cvar5 = v[v <= var5].mean()
+            var10 = np.percentile(v, 10)
+            cvar10 = v[v <= var10].mean()
+            cvar5_by_strategy[sname] = cvar5
+            print(f"{sname:<20}{enpv/1e6:>9.0f}{var5/1e6:>9.0f}{cvar5/1e6:>9.0f}{var10/1e6:>9.0f}{cvar10/1e6:>9.0f}")
+        print("(VaR5/VaR10 = 5th/10th percentile of paired NPV. CVaR5/CVaR10 = mean NPV of draws "
+              "at or below that percentile -- expected shortfall in the worst 5%/10% of outcomes.)")
+
+        fig, ax = plt.subplots(figsize=(7, 4.8), facecolor=SURFACE)
+        x = np.arange(len(cvar_strategies))
+        heights_m = [cvar5_by_strategy[s] / 1e6 for s in cvar_strategies]
+        bar_colors = [CATEGORICAL[i] for i in range(len(cvar_strategies))]
+        ax.bar(x, heights_m, color=bar_colors, zorder=2)
+        for xi, h in zip(x, heights_m):
+            ax.annotate(f"£{h:.0f}m", (xi, h), textcoords="offset points",
+                        xytext=(0, 5 if h >= 0 else -15), ha="center", fontsize=9.5, fontweight="bold")
+        ax.axhline(0, color=AXIS_LINE, lw=0.8, zorder=1)
+        ax.set_xticks(x)
+        ax.set_xticklabels(cvar_strategies, fontsize=9)
+        ax.set_ylabel("CVaR @ 5%, £m")
+        _titled(ax, "Tail risk by strategy -- CVaR (Expected Shortfall) at 5%",
+                "Mean NPV of the worst 5% of paired draws, NetZero_Tilt weighting")
+        _style_ax(ax)
+        fig.tight_layout()
+
+        path = os.path.join(out_dir, "cvar_by_strategy.png")
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return path
+
+    cvar_path = compute_and_plot_cvar(marg_store, SCENARIO_DISCOVERY_PLOTS_DIR)
+    print(f"CVaR chart -> {cvar_path}")
+
     # ---- persist the headline draws for Scenario_Discovery.py/Sensitivities.py
     # see docs/notes/Reporting/Results.md#persisting-the-headline-mc-cache
     import os as _os
@@ -289,7 +457,6 @@ if RUN_MC:
         _price_terminal = np.empty(_n)
         _bg_terminal_mw = np.full(_n, np.nan)
         # see docs/notes/Reporting/Results.md#scenario-discovery-year_bg135_raw_crossed-proxy
-        from Decision_Rules import MAIN_LINK_BG_GEN_THRESHOLD as _BG_THRESH
         _year_bg135 = np.full(_n, np.nan)
         _years_arr = np.array(M.YEARS)
         for _i in range(_n):
@@ -360,16 +527,14 @@ if RUN_MC:
     _npv_pooled = np.concatenate([marg_store[s] / 1e6 for s in PLOT_STRATEGIES])
     ax.set_xlim(*sixsigma_xlim(_npv_pooled))
     fig.tight_layout()
-    fig.savefig("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                "Methodology_4/Images/target_curves_marginalised.png", dpi=200, bbox_inches="tight")
-    plt.show()
+    fig.savefig(os.path.join(RESULTS_PLOTS_DIR, "target_curves_marginalised.png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
 
     # see docs/notes/Reporting/Results.md#pnz-2025-results-presentation-methods-overview
     PNZ_OUT_DIR = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
                    "Methodology_4/Coding/Extra/PNZ2025_Presentation")
-    PNZ_FIG_DIR = os.path.join(PNZ_OUT_DIR, "figures")
+    PNZ_FIG_DIR = RESULTS_PLOTS_DIR   # plots -> Results_Plots/, tables stay under PNZ_OUT_DIR
     PNZ_TABLE_DIR = os.path.join(PNZ_OUT_DIR, "tables")
-    os.makedirs(PNZ_FIG_DIR, exist_ok=True)
     os.makedirs(PNZ_TABLE_DIR, exist_ok=True)
 
     # see docs/notes/Reporting/Results.md#pnz-strategy-name-mapping
@@ -411,7 +576,7 @@ if RUN_MC:
         fig.tight_layout()
         path = os.path.join(PNZ_FIG_DIR, "input_distribution_capex.png")
         fig.savefig(path, dpi=200, bbox_inches="tight")
-        plt.show()
+        plt.close(fig)
         return path
 
     # ---- 5. Sensitivity line plots: value of flexibility vs a swept input --
@@ -462,7 +627,7 @@ if RUN_MC:
         fig.tight_layout()
         path = os.path.join(PNZ_FIG_DIR, out_name)
         fig.savefig(path, dpi=200, bbox_inches="tight")
-        plt.show()
+        plt.close(fig)
         return path
 
     def plot_value_of_flexibility_vs_rate():
