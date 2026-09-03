@@ -15,9 +15,8 @@ from datetime import datetime, timezone
 import Model.System_Model as M
 import Model.Options as O
 from Model.System_Model import Run_Strategy, Strategies_2, Strategies_Flex, Scenarios
-from Model.Model_Components import Decision
-from Model.Options import NewLink
 from Model.Decision_Rules import MAIN_LINK_BG_GEN_THRESHOLD as _BG_THRESH
+from Reporting._shared import paths_from_stored_z, do_nothing, lcoe_from_stores, print_metrics_table
 
 # All plots this file produces are saved here (tables/CSVs are unaffected --
 # see PNZ_TABLE_DIR below, which stays where it was).
@@ -108,47 +107,10 @@ RUN_MC = True   # False skips every Monte Carlo section below for quick iteratio
 MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
                   "Methodology_4/Coding/Extra/MC_Cache/headline_mc.pkl")
 
-# Local-only zero-build reference case (a Decision with BuildYear=None never
-# fires) -- NOT part of System_Model.Strategies_2, kept here purely as the
-# "build nothing" baseline every dNPV/dEnergy/incremental-LCOE figure below
-# is measured against.
-def _do_nothing(capex_mult=1.0):
-    return [Decision(NewLink(capex_mult), None)]
-
 if RUN_MC:
     palette = CATEGORICAL[:5]   # fixed hue order -- see shared chart style above
 
     # ---- helpers used by the new sections below -----------------------------
-
-    # Undiscounted capex of the fixed-year asset(s) built in the earliest
-    # build year, £, at capex_mult=1.0 -- a reference figure, not
-    # draw-dependent. Rule entries are skipped: build year isn't known until firing.
-    def initial_year_capex(factory):
-        opts = factory(1.0)
-        decisions = [d for d in opts if isinstance(d, Decision) and d.BuildYear() is not None]
-        if not decisions:
-            return 0.0
-        first_year = min(d.BuildYear() for d in decisions)
-        return sum(d.Asset().Capex() for d in decisions if d.BuildYear() == first_year)
-
-    # Turns an already-drawn correlated shock block z (n_years, 3) plus a
-    # scenario name into (demand, price_seq, background_seq), with NO rng
-    # involved -- the sample_*_seq functions never touch their rng argument
-    # when z_seq is supplied, so passing None is safe. This is the
-    # reconstruction step Sensitivities.py copy-pastes and the
-    # SCENARIO_DISCOVERY capture block calls directly, to replay a stored
-    # draw's paths exactly without needing an rng at all.
-    def _paths_from_stored_z(z, scenario):
-        demand = M.sample_demand_seq(None, Scenarios[scenario], len(M.YEARS), z_seq=z[:, 0])
-        price_seq = M.sample_price_seq(None, M.price_series(scenario, M.YEARS), len(M.YEARS), z_seq=z[:, 1])
-        base_bg = M.BACKGROUND.get(scenario)
-        if base_bg is not None:
-            bg_start_idx = base_bg.index[0] - M.YEARS[0]
-            z_bg = z[bg_start_idx: bg_start_idx + len(base_bg.index), 2]
-            background_seq = M.sample_background_seq(None, base_bg, z_seq=z_bg)
-        else:
-            background_seq = None
-        return demand, price_seq, background_seq
 
     # The headline MC. Each draw samples ONE capex multiplier, ONE DFES
     # scenario, a weather sequence, a noisy early capex_mult estimate, and
@@ -201,7 +163,7 @@ if RUN_MC:
             wx_seq = M.sample_wx_seq(rng, len(M.YEARS))                # 3rd: weather
             capex_estimate_seq = M.sample_capex_estimate_seq(rng, capex_mult, len(M.YEARS))  # 4th: noisy early cost estimate
             z = M.sample_correlated_gbm_shocks(rng, len(M.YEARS))      # 5th: correlated demand/price/background shock block
-            demand, price_seq, background_seq = _paths_from_stored_z(z, scenario)
+            demand, price_seq, background_seq = paths_from_stored_z(z, scenario)
             draw_capex[i] = capex_mult
             draw_scenario[i] = scenario
             draw_wx_seq[i] = wx_seq
@@ -241,62 +203,12 @@ if RUN_MC:
         hi = min(pooled_vals.max(), med + 6 * robust_sigma)
         return lo, hi
 
-    # Incremental LCOE per draw vs ref, same definition as the deterministic
-    # headline table. dC<0 & dE>0 (strategy costs LESS AND delivers MORE) is
-    # excluded from the ratio, not just guarded like the dE~0 case: that's
-    # genuine first-order dominance, not a bug, but £/MWh "cost of energy"
-    # isn't meaningful for it -- a saving divided by a gain isn't a cost per
-    # unit. Reported as its own "dominates" rate instead (see the print loop
-    # below); doesn't happen in the deterministic (no-noise) table, purely a
-    # GBM-noise-driven phenomenon on particular unlucky-for-ref draws.
-    def lcoe_from_stores(cost_store, energy_store, strategies=None, ref="Do Nothing"):
-        if strategies is None:
-            strategies = Strategies_2
-        dC_ref = cost_store[ref]
-        dE_ref = energy_store[ref]
-        out = {}
-        dominates_frac = {}
-
-        for sname in strategies:
-            if sname == ref:
-                continue
-            dE = energy_store[sname] - dE_ref
-            dC = cost_store[sname] - dC_ref
-            dominates = (dC < 0) & (dE > 0)
-            valid = (np.abs(dE) > 1e-9) & ~dominates
-            out[sname] = np.where(valid, dC / dE / 1000, np.nan)
-            dominates_frac[sname] = float(dominates.mean())
-        return out, dominates_frac
-
-    def print_metrics_table(store, label, strategies=None):
-        if strategies is None:
-            strategies = Strategies_2
-        print(f"\n=== Metrics table — marginalised MC, {label} weighting (£m) ===")
-        enpvs = {sname: vals.mean() for sname, vals in store.items()}
-        print(f"{'Strategy':<20}{'ENPV':>9}{'P5':>9}{'P50':>9}{'P95':>9}"
-              f"{'StdDev':>9}{'P(NPV<0)':>10}{'InitCapex':>11}{'dENPVvsBest':>13}")
-        for sname, vals in store.items():
-            v = vals / 1e6
-            others = [e for s, e in enpvs.items() if s != sname]
-            best_other = max(others) if others else float("nan")
-            d_best = (enpvs[sname] - best_other) / 1e6
-            p_neg = float(np.mean(vals < 0))
-            init_capex = initial_year_capex(strategies[sname]) / 1e6
-            print(f"{sname:<20}{v.mean():>9.0f}{np.percentile(v, 5):>9.0f}"
-                  f"{np.percentile(v, 50):>9.0f}{np.percentile(v, 95):>9.0f}"
-                  f"{v.std():>9.0f}{p_neg:>10.2f}{init_capex:>11.0f}{d_best:>13.0f}")
-        print("(InitCapex = undiscounted capex of fixed-year assets built in the "
-              "earliest build year -- 0/partial for flexible strategies, whose "
-              "build years are drawn at runtime. dENPVvsBest = ENPV(strategy) - "
-              "ENPV(best other strategy in this table).)")
-
-
     # ---- 2. marginalised Monte Carlo (headline), NetZero_Tilt weighting ----
     # Rigid + flexible run together in one pass. "Do Nothing" is included so
     # lcoe_from_stores' ref="Do Nothing" default has a real entry to read.
     # NetZero_Tilt (not Equal) is the standard weighting for every
     # plot/table below -- Equal is run as the comparison case in section 7.
-    ALL_STRATEGIES = {"Do Nothing": _do_nothing, **Strategies_2, **Strategies_Flex}
+    ALL_STRATEGIES = {"Do Nothing": do_nothing, **Strategies_2, **Strategies_Flex}
     # TARGET_STRATEGIES: every strategy except "Do Nothing" (the reference,
     # not a target-curve entry). Stays the real ALL_STRATEGIES/marg_store
     # data keys; TARGET_LABELS is the display name (identity map, since
@@ -489,7 +401,7 @@ if RUN_MC:
             # silently regenerated under the new default, and a fresh rerun
             # later disagreed by ~£1bn/strategy with no way to tell from the
             # pickle alone. Checked on every load site (see
-            # _check_cache_provenance in Sensitivities.py etc).
+            # Reporting._shared.check_cache_provenance).
             "metadata": {
                 "n": 2000,
                 "seed": 42,
@@ -533,7 +445,7 @@ if RUN_MC:
         _capex_estimate_year0 = marg_raw_draws["capex_estimate_seq"][:, 0]
 
         # z is reconstructed into economically meaningful terminal-year
-        # quantities via the SAME _paths_from_stored_z helper the MC loop
+        # quantities via the same paths_from_stored_z helper the MC loop
         # already uses (a pure function of z+scenario, no rng, so this is an
         # exact replay, not a re-draw). Terminal year (2051) is chosen over a
         # cumulative multiplier so the summary is directly comparable in the
@@ -553,7 +465,7 @@ if RUN_MC:
         _year_bg135 = np.full(_n, np.nan)
         _years_arr = np.array(M.YEARS)
         for _i in range(_n):
-            _demand, _price_seq, _bg_seq = _paths_from_stored_z(marg_raw_draws["z"][_i], draw_scenario[_i])
+            _demand, _price_seq, _bg_seq = paths_from_stored_z(marg_raw_draws["z"][_i], draw_scenario[_i])
             _demand_terminal[_i] = _demand[-1]
             _price_terminal[_i] = _price_seq[-1]
             if _bg_seq is not None:
@@ -718,7 +630,7 @@ if RUN_MC:
                 scenario = draw_scenario[i]
                 wx_seq = marg_raw_draws["wx_seq"][i]
                 capex_estimate_seq = marg_raw_draws["capex_estimate_seq"][i]
-                demand, price_seq, background_seq = _paths_from_stored_z(marg_raw_draws["z"][i], scenario)
+                demand, price_seq, background_seq = paths_from_stored_z(marg_raw_draws["z"][i], scenario)
                 npv_flex = Run_Strategy((flex_name, factory_flex(capex_mult)), demand, scenario, wx_seq,
                                          capex_mult, capex_estimate_seq, price_seq, background_seq)[3]
                 npv_base = Run_Strategy((base_name, factory_base(capex_mult)), demand, scenario, wx_seq,

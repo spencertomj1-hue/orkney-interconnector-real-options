@@ -63,7 +63,7 @@ def _flexible_cost_aware(capex_mult=1.0, cost_cap=MAIN_LINK_COST_CAP,
                                  cost_cap_max_defer=cost_cap_max_defer, gate_mode=gate_mode,
                                  npv_margin=npv_margin)]
 
-# make_staged_link_strategy replaces the single 220MW NewLink block with N stages, individually priced with a learning-curve discount on later stages' £/MW; stage 1 builds unconditionally at a fixed year (2028), stages 2+ gate on TOTAL GENERATION (background_gen_mw), genuinely reactive.
+# make_staged_link_strategy replaces the single 220MW NewLink block with N stages, individually priced with a learning-curve discount on later stages' £/MW; stage 1 builds unconditionally at a fixed year (2028), stages 2+ gate on total generation (background_gen_mw), genuinely reactive.
 # capex_mult is unused -- each stage's realised multiplier comes from state["capex_estimate"] at its own build year instead; fixed_per_stage/theta are override hooks for Results.py's sensitivity sweeps.
 def _flexible_staged(capex_mult=1.0, fixed_per_stage=None, theta=None):
     return list(make_staged_link_strategy(fixed_per_stage=fixed_per_stage, theta=theta))

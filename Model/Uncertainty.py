@@ -113,7 +113,7 @@ DEMAND_GBM_SIGMA = DEMAND_GBM_SIGMA_ESTIMATED   # SSEN ANM annual demand, n=5 di
 PRICE_GBM_SIGMA = PRICE_GBM_SIGMA_ESTIMATED
 
 # Half-lives (years) for the mean-reverting demand/price paths -- how long a deviation takes to decay halfway back to the deterministic path; illustrative, not data-calibrated, since nowhere near enough history exists to fit a reversion rate.
-# The DIFFERENCE between them is a real judgement call: prices are routinely modelled as mean-reverting on a few-year timescale, reverting much faster than demand, which behaves closer to a persistent random walk.
+# The difference between them is a real judgement call: prices are routinely modelled as mean-reverting on a few-year timescale, reverting much faster than demand, which behaves closer to a persistent random walk.
 PRICE_MR_HALFLIFE_YEARS = 3.0
 DEMAND_MR_HALFLIFE_YEARS = 15.0
 
@@ -141,7 +141,7 @@ def _ou_mult_seq(rng, n_years, sigma, theta, dt=1.0, z_seq=None):
 GBM_SHOCK_CORR = GBM_SHOCK_CORR_ESTIMATED
 
 
-# Draws correlated standard-normal shock paths for demand/price/background GBM noise JOINTLY (via Cholesky decomposition of corr), instead of each sampler drawing independent shocks.
+# Draws correlated standard-normal shock paths for demand/price/background GBM noise jointly (via Cholesky decomposition of corr), instead of each sampler drawing independent shocks.
 # Returns (n_years, 3), columns [demand, price, background], row t aligned to YEARS[t] -- callers must slice consistently (background_gen_mw's own series is shorter, starting 2026).
 def sample_correlated_gbm_shocks(rng, n_years, corr=None):
     if corr is None:
@@ -181,7 +181,7 @@ BACKGROUND_GBM_SIGMA = BACKGROUND_GBM_SIGMA_ESTIMATED
 BACKGROUND_MR_HALFLIFE_YEARS = 8.0
 
 
-# DFES background generation path times a cumulative unit-mean mean-reverting multiplier -- ONE shared multiplier per year across every tech column, not independent per-technology noise.
+# DFES background generation path times a cumulative unit-mean mean-reverting multiplier -- one shared multiplier per year across every tech column, not independent per-technology noise.
 # Only spans base_background's own index (2026-2051).
 def sample_background_seq(rng, base_background, sigma_bg=None, z_seq=None, halflife=None):
     if sigma_bg is None:

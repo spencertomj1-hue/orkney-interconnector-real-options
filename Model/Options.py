@@ -75,7 +75,7 @@ def stage_variable_permw(stage_index, cum_mw_before_stage, stage_sizes,
 
 
 # One stage of a staged (multi-block) interconnector build, same read interface as NewLink.
-# capex_mult is the REALISED multiplier for THIS stage -- for the rule-based strategy this comes from sample_capex_estimate_seq at the stage's own build year, not a single project-wide draw like NewLink uses.
+# capex_mult is the realised multiplier for this stage -- for the rule-based strategy this comes from sample_capex_estimate_seq at the stage's own build year, not a single project-wide draw like NewLink uses.
 class StagedLinkStage:
     def __init__(self, capacity_mw, fixed_per_stage, variable_permw, capex_mult=1.0):
         self.__Classification = 'Link'

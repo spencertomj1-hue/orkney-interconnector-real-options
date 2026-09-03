@@ -32,7 +32,7 @@ def _load_demand_annual(path=None):
 
 
 # Std of annual log-changes in the measured ANM demand series (SSEN Orkney).
-# Restricted to status=='complete' years, diffed only across CONSECUTIVE
+# Restricted to status=='complete' years, diffed only across consecutive
 # complete years so a diff never spans a gap year (2015/2018/2022). Uses raw
 # measured demand, not the weather-corrected series Demand.py's trend was fit
 # on -- acceptable, that's the kind of unmodelled variation GBM noise is
@@ -81,7 +81,7 @@ PRICE_GBM_SIGMA_ESTIMATED_EXCL_CRISIS = estimate_price_gbm_sigma(exclude_years=P
 
 
 # Not a literal match for what BACKGROUND_GBM_SIGMA models (the DFES
-# background-generation PIPELINE's build-out noise, not the existing fleet's
+# background-generation pipeline's build-out noise, not the existing fleet's
 # output) -- there's no historical track record for that specific forecast
 # pipeline. This is the closest measured Orkney generation series available,
 # the same role PRICE_GBM_SIGMA's UK-wholesale proxy plays for a local price
@@ -92,7 +92,7 @@ GENERATION_ANNUAL_CSV = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_P
 # generation_annual_clean.csv's own status flag is far stricter than
 # demand's (coverage >= ~0.92, keeping only 3 of 10 years: 2012/2020/2021 --
 # a single consecutive pair) than demand's own flag (8 of 10 years). A
-# day-coverage THRESHOLD instead admits partial-coverage years too,
+# day-coverage threshold instead admits partial-coverage years too,
 # annualised by dividing by their coverage fraction -- cruder than demand's
 # own month-aware backfill, but the best available without redoing the
 # cleaning pipeline. 0.75 sits exactly between the weakest year worth

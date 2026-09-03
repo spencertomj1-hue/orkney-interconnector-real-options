@@ -18,11 +18,11 @@ import pickle
 
 import Model.System_Model as M
 from Model.System_Model import Run_Strategy, Strategies_2, Strategies_Flex, Scenarios, DFES_ONLY
-from Model.Model_Components import Decision
 import Model.Options as O
-from Model.Options import NewLink, STAGED_LINK_FIXED_PER_STAGE_SWEEP, LINK_OPEX_SWEEP
+from Model.Options import STAGED_LINK_FIXED_PER_STAGE_SWEEP, LINK_OPEX_SWEEP
 from Model.Decision_Rules import STAGED_LINK_THETA_SWEEP
 from Inputs.Data_Processing.Generation.GBM_Correlation import PLACEHOLDER_CORR_MATRIX
+from Reporting._shared import check_cache_provenance, paths_from_stored_z, do_nothing, print_metrics_table
 
 # All plots this file produces are saved here.
 SENSITIVITIES_PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Sensitivities_Plots")
@@ -33,51 +33,9 @@ MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
 with open(MC_CACHE_PATH, "rb") as _f:
     _CACHE = pickle.load(_f)
 
-# Loud-fail provenance guard: a cache built under different model-defining
-# flags than this run's current ones would silently produce wrong-world
-# numbers. A pre-guard cache (no "metadata" key) fails loud too, not a
-# silent pass -- an un-stamped cache's provenance is unknown, not assumed-fine.
-def _check_cache_provenance(cache, path):
-    meta = cache.get("metadata")
-    if meta is None:
-        raise RuntimeError(
-            f"{path} has no provenance metadata (written before this guard existed) -- "
-            "regenerate it (or re-stamp it) before trusting its marg_store/marg_cost/marg_energy.")
-    # no model flags tracked here currently (wind-as-option removed) -- kept
-    # as an empty tuple so future flags can be added without restructuring.
-    mismatches = [f"{k}: cache={meta[k]!r} vs current={cur!r}"
-                  for k, cur in ()
-                  if meta[k] != cur]
-    if mismatches:
-        raise RuntimeError(
-            f"{path} was built under different model flags than this run expects -- "
-            f"regenerate the cache before trusting it: " + "; ".join(mismatches))
+check_cache_provenance(_CACHE, MC_CACHE_PATH)
 
-_check_cache_provenance(_CACHE, MC_CACHE_PATH)
-
-# Turns a stored correlated shock block z (n_years, 3) + scenario name into
-# (demand, price_seq, background_seq) with no rng involved -- the sample_*_seq
-# functions never touch their rng argument when z_seq is supplied, so passing
-# None is safe. Copy-pasted from Results.py's version of the same helper.
-def _paths_from_stored_z(z, scenario):
-    demand = M.sample_demand_seq(None, Scenarios[scenario], len(M.YEARS), z_seq=z[:, 0])
-    price_seq = M.sample_price_seq(None, M.price_series(scenario, M.YEARS), len(M.YEARS), z_seq=z[:, 1])
-    base_bg = M.BACKGROUND.get(scenario)
-    if base_bg is not None:
-        bg_start_idx = base_bg.index[0] - M.YEARS[0]
-        z_bg = z[bg_start_idx: bg_start_idx + len(base_bg.index), 2]
-        background_seq = M.sample_background_seq(None, base_bg, z_seq=z_bg)
-    else:
-        background_seq = None
-    return demand, price_seq, background_seq
-
-# Local zero-build reference case (a Decision with BuildYear=None never
-# fires -- see Model_Components.Decision.IsBuilt). Copy-pasted from
-# Results.py; needed here for the cost-aware cost_cap sweep's "Do Nothing" arm.
-def _do_nothing(capex_mult=1.0):
-    return [Decision(NewLink(capex_mult), None)]
-
-ALL_STRATEGIES = {"Do Nothing": _do_nothing, **Strategies_2, **Strategies_Flex}
+ALL_STRATEGIES = {"Do Nothing": do_nothing, **Strategies_2, **Strategies_Flex}
 TARGET_STRATEGIES = ["Baseline", "Fixed 4-Stage", "Flexible 4-Stage", "Flexible 1-Stage (Cost-Aware)", "Flexible 1-Stage"]
 TARGET_LABELS = {s: s for s in TARGET_STRATEGIES}   # identity map -- see Results.py's own TARGET_LABELS comment
 # The standard 4-strategy set every headline chart shows (Baseline, Fixed
@@ -178,7 +136,7 @@ def _run_marginalised_weighting(weights, seed=42, n=2000, strategies=None):
         wx_seq = M.sample_wx_seq(rng, len(M.YEARS))
         capex_estimate_seq = M.sample_capex_estimate_seq(rng, capex_mult, len(M.YEARS))
         z = M.sample_correlated_gbm_shocks(rng, len(M.YEARS))
-        demand, price_seq, background_seq = _paths_from_stored_z(z, scenario)
+        demand, price_seq, background_seq = paths_from_stored_z(z, scenario)
 
         for sname, factory in strategies.items():
             opts = factory(capex_mult)
@@ -187,36 +145,6 @@ def _run_marginalised_weighting(weights, seed=42, n=2000, strategies=None):
             store[sname][i] = result[3]
 
     return store
-
-def initial_year_capex(factory):
-    opts = factory(1.0)
-    decisions = [d for d in opts if isinstance(d, Decision) and d.BuildYear() is not None]
-    if not decisions:
-        return 0.0
-    first_year = min(d.BuildYear() for d in decisions)
-    return sum(d.Asset().Capex() for d in decisions if d.BuildYear() == first_year)
-
-def print_metrics_table(store, label, strategies=None):
-    if strategies is None:
-        strategies = Strategies_2
-    print(f"\n=== Metrics table — marginalised MC, {label} weighting (£m) ===")
-    enpvs = {sname: vals.mean() for sname, vals in store.items()}
-    print(f"{'Strategy':<20}{'ENPV':>9}{'P5':>9}{'P50':>9}{'P95':>9}"
-          f"{'StdDev':>9}{'P(NPV<0)':>10}{'InitCapex':>11}{'dENPVvsBest':>13}")
-    for sname, vals in store.items():
-        v = vals / 1e6
-        others = [e for s, e in enpvs.items() if s != sname]
-        best_other = max(others) if others else float("nan")
-        d_best = (enpvs[sname] - best_other) / 1e6
-        p_neg = float(np.mean(vals < 0))
-        init_capex = initial_year_capex(strategies[sname]) / 1e6
-        print(f"{sname:<20}{v.mean():>9.0f}{np.percentile(v, 5):>9.0f}"
-              f"{np.percentile(v, 50):>9.0f}{np.percentile(v, 95):>9.0f}"
-              f"{v.std():>9.0f}{p_neg:>10.2f}{init_capex:>11.0f}{d_best:>13.0f}")
-    print("(InitCapex = undiscounted capex of fixed-year assets built in the "
-          "earliest build year -- 0/partial for flexible strategies, whose "
-          "build years are drawn at runtime. dENPVvsBest = ENPV(strategy) - "
-          "ENPV(best other strategy in this table).)")
 
 marg_store_equal = _run_marginalised_weighting(M.SCENARIO_WEIGHTS["Equal"], strategies=ALL_STRATEGIES)
 print_metrics_table(marg_store_equal, "Equal", ALL_STRATEGIES)
@@ -273,7 +201,7 @@ for i in range(N_SENS):
     scenario = _CACHE["draw_scenario"][i]
     wx_seq = _CACHE["draw_wx_seq"][i]
     capex_estimate_seq = _CACHE["draw_capex_estimate_seq"][i]
-    demand, price_seq, background_seq = _paths_from_stored_z(_CACHE["draw_z"][i], scenario)
+    demand, price_seq, background_seq = paths_from_stored_z(_CACHE["draw_z"][i], scenario)
 
     for sname, factory in Strategies_2.items():
         opts = factory(capex_mult)
@@ -332,7 +260,7 @@ for i in range(N_SENS):
     scenario = _CACHE["draw_scenario"][i]
     wx_seq = _CACHE["draw_wx_seq"][i]
     capex_estimate_seq = _CACHE["draw_capex_estimate_seq"][i]
-    demand, price_seq, background_seq = _paths_from_stored_z(_CACHE["draw_z"][i], scenario)
+    demand, price_seq, background_seq = paths_from_stored_z(_CACHE["draw_z"][i], scenario)
 
     opts_flex = Strategies_Flex["Flexible 1-Stage"](capex_mult)
     flex_draws_fps[i] = Run_Strategy(("Flexible 1-Stage", opts_flex), demand, scenario, wx_seq,
@@ -367,7 +295,7 @@ for i in range(N_SENS):
     scenario = _CACHE["draw_scenario"][i]
     wx_seq = _CACHE["draw_wx_seq"][i]
     capex_estimate_seq = _CACHE["draw_capex_estimate_seq"][i]
-    demand, price_seq, background_seq = _paths_from_stored_z(_CACHE["draw_z"][i], scenario)
+    demand, price_seq, background_seq = paths_from_stored_z(_CACHE["draw_z"][i], scenario)
 
     opts_flex = Strategies_Flex["Flexible 1-Stage"](capex_mult)
     flex_draws_theta[i] = Run_Strategy(("Flexible 1-Stage", opts_flex), demand, scenario, wx_seq,
@@ -388,8 +316,8 @@ for th in theta_values:
           f"{np.median(diff):>20.1f}{(diff < 0).mean():>18.2f}")
 
 # ---- 13. LINK_OPEX_RATE sensitivity --------------------------------------
-# Link assets read LINK_OPEX_RATE as a plain module global AT CONSTRUCTION
-# TIME, so mutating Options.LINK_OPEX_RATE before each factory() call takes effect.
+# Link assets read LINK_OPEX_RATE as a plain module global at construction
+# time, so mutating Options.LINK_OPEX_RATE before each factory() call takes effect.
 print("\n=== LINK_OPEX_RATE sensitivity: ENPV, marginalised MC, NetZero_Tilt weighting, N=500 ===")
 opex_values = LINK_OPEX_SWEEP
 _orig_link_opex_rate = O.LINK_OPEX_RATE
@@ -401,7 +329,7 @@ for i in range(N_SENS):
     scenario = _CACHE["draw_scenario"][i]
     wx_seq = _CACHE["draw_wx_seq"][i]
     capex_estimate_seq = _CACHE["draw_capex_estimate_seq"][i]
-    demand, price_seq, background_seq = _paths_from_stored_z(_CACHE["draw_z"][i], scenario)
+    demand, price_seq, background_seq = paths_from_stored_z(_CACHE["draw_z"][i], scenario)
 
     for sname, factory in Strategies_2.items():
         for rate in opex_values:
@@ -420,7 +348,7 @@ for sname in Strategies_2:
         f"{opex_sensitivity[rate][sname] / 1e6:>14.1f}" for rate in opex_values))
 
 # ---- 14. AVAIL (wake + availability + electrical losses) sensitivity ----
-# Unlike LINK_OPEX_RATE, AVAIL is baked into WIND_CF_BY_YEAR ONCE at import
+# Unlike LINK_OPEX_RATE, AVAIL is baked into WIND_CF_BY_YEAR once at import
 # time, not read fresh per year -- compute_wind_cf_by_year(avail) recomputes
 # that dict, swapped in before each draw and restored after.
 print("\n=== AVAIL (wake+availability+electrical losses) sensitivity: ENPV, marginalised MC, NetZero_Tilt weighting, N=500 ===")
@@ -435,7 +363,7 @@ for i in range(N_SENS):
     scenario = _CACHE["draw_scenario"][i]
     wx_seq = _CACHE["draw_wx_seq"][i]
     capex_estimate_seq = _CACHE["draw_capex_estimate_seq"][i]
-    demand, price_seq, background_seq = _paths_from_stored_z(_CACHE["draw_z"][i], scenario)
+    demand, price_seq, background_seq = paths_from_stored_z(_CACHE["draw_z"][i], scenario)
 
     for sname, factory in Strategies_2.items():
         opts = factory(capex_mult)
@@ -460,7 +388,7 @@ for sname in Strategies_2:
 # drawn, not just how Run_Strategy scores a fixed set of paths -- but it's
 # still fully reconstructable from the cache: since draw_z = z_indep @
 # L_measured.T and L_measured = cholesky(GBM_SHOCK_CORR) is known,
-# z_indep = solve(L_measured, draw_z.T).T recovers the INDEPENDENT shock
+# z_indep = solve(L_measured, draw_z.T).T recovers the independent shock
 # block exactly, then re-correlating that same z_indep under either
 # candidate matrix isolates the correlation structure's effect from draw
 # noise, without redrawing.
@@ -471,7 +399,7 @@ _L_measured = np.linalg.cholesky(M.GBM_SHOCK_CORR)
 def _paths_from_z_indep(z_indep, corr, scenario):
     L = np.linalg.cholesky(corr)
     z = z_indep @ L.T
-    return _paths_from_stored_z(z, scenario)
+    return paths_from_stored_z(z, scenario)
 
 corr_draws = {label: {sname: np.empty(N_SENS) for sname in Strategies_2} for label in corr_settings}
 
@@ -521,7 +449,7 @@ p90_draws = {p90: {s: np.empty(N_SENS) for s in CAPEX_SWEEP_STRATS} for p90 in p
 for i in range(N_SENS):
     scenario = _CACHE["draw_scenario"][i]
     wx_seq = _CACHE["draw_wx_seq"][i]
-    demand, price_seq, background_seq = _paths_from_stored_z(_CACHE["draw_z"][i], scenario)
+    demand, price_seq, background_seq = paths_from_stored_z(_CACHE["draw_z"][i], scenario)
     z_capex = (np.log(_CACHE["draw_capex"][i]) - _CACHE["capex_mu"]) / _CACHE["capex_sigma"]
     _noise_ratio = _CACHE["draw_capex_estimate_seq"][i] / _CACHE["draw_capex"][i]
 
@@ -577,7 +505,7 @@ plt.close(fig)
 # Demand/price/background GBM volatility, not capex overrun, was found to be
 # the dominant driver of Baseline's underperformance vs Do Nothing. This asks
 # the natural follow-up for "Flexible 1-Stage" (already demand-aware): does
-# ALSO gating the build decision on the noisy early capex_mult estimate
+# also gating the build decision on the noisy early capex_mult estimate
 # capture further incremental value, or is demand-awareness already doing
 # the useful work? cost_cap has no real-world anchor, so it's swept rather
 # than guessed; 10.0 is a de facto "unconstrained" control (above virtually
@@ -598,12 +526,12 @@ for i in range(N_SENS):
     scenario = _CACHE["draw_scenario"][i]
     wx_seq = _CACHE["draw_wx_seq"][i]
     capex_estimate_seq = _CACHE["draw_capex_estimate_seq"][i]
-    demand, price_seq, background_seq = _paths_from_stored_z(_CACHE["draw_z"][i], scenario)
+    demand, price_seq, background_seq = paths_from_stored_z(_CACHE["draw_z"][i], scenario)
 
     opts_flex = Strategies_Flex["Flexible 1-Stage"](capex_mult)
     flex_draws_ca[i] = Run_Strategy(("Flexible 1-Stage", opts_flex), demand, scenario, wx_seq,
                                      capex_mult, capex_estimate_seq, price_seq, background_seq)[3]
-    dn_draws_ca[i] = Run_Strategy(("Do Nothing", _do_nothing(capex_mult)), demand, scenario, wx_seq,
+    dn_draws_ca[i] = Run_Strategy(("Do Nothing", do_nothing(capex_mult)), demand, scenario, wx_seq,
                                    capex_mult, capex_estimate_seq, price_seq, background_seq)[3]
 
     for cc in cost_cap_values:

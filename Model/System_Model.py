@@ -92,7 +92,7 @@ PROFILES["Marine"] = np.clip(_raw * (MARINE_CF / _raw.mean()), 0.0, 1.0)
 YEARS = list(range(2019, 2052))          # limit of Demand.py / DFES data
 END_YEAR = YEARS[-1]
 
-# CfD strike held FLAT in real terms -- CPI-indexing rebases 39.65 (£2012/MWh) to PRICE_BASE_YEAR once, rather than escalating it nominally every year.
+# CfD strike held flat in real terms -- CPI-indexing rebases 39.65 (£2012/MWh) to PRICE_BASE_YEAR once, rather than escalating it nominally every year.
 # PRICE_BASE_YEAR must match capex/price_series's price base -- both UNVERIFIED; 2023 is a working assumption pending that check.
 PRICE_BASE_YEAR = 2023
 
@@ -117,8 +117,8 @@ CPI_BY_YEAR = _load_cpi_by_year()
 # strike quoted in 2012 money, rebased once to PRICE_BASE_YEAR, flat thereafter
 CFD_STRIKE = 39.65 * CPI_BY_YEAR[PRICE_BASE_YEAR] / CPI_BY_YEAR[2012]
 
-# Alternative to background_gen_mw for make_main_link_rule (observable="growth_index", default OFF): blends demand's OWN growth with background_gen_mw's growth so both exogenous DFES drivers register, not only generation.
-# Checked against DFES data: does NOT diverge meaningfully earlier than background_gen_mw alone; GROWTH_INDEX_BLEND_WEIGHT's 50/50 split has no independent justification, tune directly.
+# Alternative to background_gen_mw for make_main_link_rule (observable="growth_index", default off): blends demand's own growth with background_gen_mw's growth so both exogenous DFES drivers register, not only generation.
+# Checked against DFES data: does not diverge meaningfully earlier than background_gen_mw alone; GROWTH_INDEX_BLEND_WEIGHT's 50/50 split has no independent justification, tune directly.
 GROWTH_INDEX_BLEND_WEIGHT = 0.5
 GROWTH_INDEX_DEMAND_REF = LEVEL_2019               # demand's own 2019 base level, GWh
 GROWTH_INDEX_BG_REF = MAIN_LINK_BG_GEN_THRESHOLD   # 135MW, Ofgem's condition -- reused, not reinvented
@@ -149,7 +149,7 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
     pv_energy = 0      # discounted delivered energy, GWh
     pv_revenue = 0     # discounted revenue, £
     total_curtail = 0  # undiscounted curtailment, GWh
-    # LCOT (Levelised Cost of Transmission): Link-only discounted cost and discounted energy actually exported THROUGH the link.
+    # LCOT (Levelised Cost of Transmission): Link-only discounted cost and discounted energy actually exported through the link.
     # A subset of total_cost_t/pv_energy above, tracked in parallel, not derived from them after the fact.
     link_cost_t = 0       # discounted cost, £, Link-classified assets only
     pv_link_export = 0    # discounted energy exported through the link, GWh
@@ -226,7 +226,7 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
         gen_h = np.zeros(8760)
         caps = G.Capacity_By_Type(Year)
 
-        # Subtract the existing fleet's original nameplate PERMANENTLY (not life-gated) so it's represented once and retires once -- a life-gated subtraction would let the immortal DFES base silently re-add retired capacity.
+        # Subtract the existing fleet's original nameplate permanently (not life-gated) so it's represented once and retires once -- a life-gated subtraction would let the immortal DFES base silently re-add retired capacity.
         # background_seq lets the MC loop inject a noisy (GBM) path; None keeps the deterministic BACKGROUND[scenario] lookup.
         bg = background_seq if background_seq is not None else BACKGROUND.get(scenario_name)
         if bg is not None and Year in bg.index:
@@ -270,7 +270,7 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
 
         delivered = (local.sum() + export.sum()) / 1000       # GWh
         pv_energy += delivered / df
-        pv_link_export += (export.sum() / 1000) / df   # LCOT denominator -- energy THROUGH the link only, not local consumption
+        pv_link_export += (export.sum() / 1000) / df   # LCOT denominator -- energy through the link only, not local consumption
         spilled = (surplus - export).sum() / 1000              # GWh, disjoint from delivered
         total_curtail += spilled
         total_cost_t += spilled * 1000 * CONSTRAINT_COST / df   # constraint-relief cost, £, discounted
@@ -300,7 +300,7 @@ def Run_Strategy(Strategy,Demand,scenario_name,wx_seq=None,capex_mult=1.0,capex_
             state["headroom_p90"][t] = np.percentile(surplus, 90) - link
         state["delivered"][t] = delivered
         state["gen_total"][t] = gen_h.sum()
-        # Fix B (make_npv_gate): the price the CURRENTLY-delivered mix earns, used as a proxy for what NEWLY-deliverable (currently curtailed) energy would earn once the link removes the constraint.
+        # Fix B (make_npv_gate): the price the currently-delivered mix earns, used as a proxy for what newly-deliverable (currently curtailed) energy would earn once the link removes the constraint.
         # Unconditional -- already computed above, no extra cost.
         state["price_gbp_mwh"][t] = price
 

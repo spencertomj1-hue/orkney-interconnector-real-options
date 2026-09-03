@@ -17,53 +17,21 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 import Model.System_Model as M
-from Model.System_Model import Run_Strategy, Scenarios, Strategies_2, Strategies_Flex
-from Model.Model_Components import Decision
-from Model.Options import NewLink
+from Model.System_Model import Run_Strategy, Strategies_2, Strategies_Flex
 from Model.Decision_Rules import MAIN_LINK_BG_GEN_THRESHOLD as _BG_THRESH
+from Reporting._shared import check_cache_provenance, paths_from_stored_z, do_nothing, lcoe_from_stores
 
 MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
                   "Methodology_4/Coding/Extra/MC_Cache/headline_mc.pkl")
 with open(MC_CACHE_PATH, "rb") as _f:
     _CACHE = pickle.load(_f)
 
-def _check_cache_provenance(cache, path):
-    meta = cache.get("metadata")
-    if meta is None:
-        raise RuntimeError(
-            f"{path} has no provenance metadata (written before this guard existed) -- "
-            "regenerate it (or re-stamp it) before trusting its marg_store/marg_cost/marg_energy.")
-    # no model flags tracked here currently (wind-as-option removed) -- kept
-    # as an empty tuple so future flags can be added without restructuring.
-    mismatches = [f"{k}: cache={meta[k]!r} vs current={cur!r}"
-                  for k, cur in ()
-                  if meta[k] != cur]
-    if mismatches:
-        raise RuntimeError(
-            f"{path} was built under different model flags than this run expects -- "
-            f"regenerate the cache before trusting it: " + "; ".join(mismatches))
-
-_check_cache_provenance(_CACHE, MC_CACHE_PATH)
+check_cache_provenance(_CACHE, MC_CACHE_PATH)
 
 N = _CACHE["n"]
 assert N == 2000 and _CACHE["seed"] == 42
 
-def _paths_from_stored_z(z, scenario):
-    demand = M.sample_demand_seq(None, Scenarios[scenario], len(M.YEARS), z_seq=z[:, 0])
-    price_seq = M.sample_price_seq(None, M.price_series(scenario, M.YEARS), len(M.YEARS), z_seq=z[:, 1])
-    base_bg = M.BACKGROUND.get(scenario)
-    if base_bg is not None:
-        bg_start_idx = base_bg.index[0] - M.YEARS[0]
-        z_bg = z[bg_start_idx: bg_start_idx + len(base_bg.index), 2]
-        background_seq = M.sample_background_seq(None, base_bg, z_seq=z_bg)
-    else:
-        background_seq = None
-    return demand, price_seq, background_seq
-
-def _do_nothing(capex_mult=1.0):
-    return [Decision(NewLink(capex_mult), None)]
-
-ALL_STRATEGIES = {"Do Nothing": _do_nothing, **Strategies_2, **Strategies_Flex}
+ALL_STRATEGIES = {"Do Nothing": do_nothing, **Strategies_2, **Strategies_Flex}
 
 # Recomputed fresh under current strategy defaults rather than read back from
 # the cache, so a code change to e.g. a strategy's gate_mode is reflected here
@@ -77,7 +45,7 @@ for i in range(N):
     scenario = _CACHE["draw_scenario"][i]
     wx_seq = _CACHE["draw_wx_seq"][i]
     capex_estimate_seq = _CACHE["draw_capex_estimate_seq"][i]
-    demand, price_seq, background_seq = _paths_from_stored_z(_CACHE["draw_z"][i], scenario)
+    demand, price_seq, background_seq = paths_from_stored_z(_CACHE["draw_z"][i], scenario)
 
     for sname, factory in ALL_STRATEGIES.items():
         opts = factory(capex_mult)
@@ -90,26 +58,8 @@ for i in range(N):
 draw_capex = _CACHE["draw_capex"]
 draw_scenario = _CACHE["draw_scenario"]
 
-# ---- lcoe_from_stores, copy-pasted verbatim from Results.py (defined ------
-# ---- locally there, not importable) ----------------------------------------
-def lcoe_from_stores(cost_store, energy_store, strategies, ref="Do Nothing"):
-    dC_ref = cost_store[ref]
-    dE_ref = energy_store[ref]
-    out = {}
-    dominates_frac = {}
-    for sname in strategies:
-        if sname == ref:
-            continue
-        dE = energy_store[sname] - dE_ref
-        dC = cost_store[sname] - dC_ref
-        dominates = (dC < 0) & (dE > 0)
-        valid = (np.abs(dE) > 1e-9) & ~dominates
-        out[sname] = np.where(valid, dC / dE / 1000, np.nan)
-        dominates_frac[sname] = float(dominates.mean())
-    return out, dominates_frac
-
-# ---- path -> scalar summaries, copy-pasted verbatim from Results.py's -----
-# ---- SCENARIO_DISCOVERY-gated block (same assumptions, same flags) --------
+# ---- path -> scalar summaries, same as Results.py's SCENARIO_DISCOVERY -----
+# ---- gated block (same assumptions, same flags) ----------------------------
 _wind_cf_proxy = np.array([
     np.mean([M._year_means[y] for y in _wx]) for _wx in _CACHE["draw_wx_seq"]
 ])
@@ -122,7 +72,7 @@ _bg_terminal_mw = np.full(_n, np.nan)
 _year_bg135 = np.full(_n, np.nan)
 _years_arr = np.array(M.YEARS)
 for _i in range(_n):
-    _demand, _price_seq, _bg_seq = _paths_from_stored_z(_CACHE["draw_z"][_i], draw_scenario[_i])
+    _demand, _price_seq, _bg_seq = paths_from_stored_z(_CACHE["draw_z"][_i], draw_scenario[_i])
     _demand_terminal[_i] = _demand[-1]
     _price_terminal[_i] = _price_seq[-1]
     if _bg_seq is not None:

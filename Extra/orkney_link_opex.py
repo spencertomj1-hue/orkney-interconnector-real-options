@@ -2,7 +2,7 @@
 # standalone OpEx figure exists for these cables, so this is built from
 # proxies and explicit assumptions, not a sourced actual -- every constant
 # below is tagged SOURCED/PROXY/ASSUMED/PLACEHOLDER in its own comment.
-# Two independent methods, deliberately NOT reconciled to agree with each
+# Two independent methods, deliberately not reconciled to agree with each
 # other -- disagreement between them is informative, not a bug to fix:
 # Method A is a scaled-fixed-O&M-only proxy (fast, but structurally excludes
 # electrical losses); Method B is bottom-up (conductor I^2*R losses + the same
@@ -31,16 +31,16 @@ RESISTANCE_OHM_PER_KM = 0.099       # PROXY, UNVERIFIED: "standard cable tables"
 POWER_FACTOR = 0.95                 # ASSUMED (source table: "assumption, flag")
 LOSS_PRICE_GBP_PER_MWH_RANGE = [60, 70, 80]   # ASSUMED range (source table: "user to set; run both ends") -- 70 added as a midpoint for the base-case printout, not in the original range
 
-# ---- ASSUMED here, NOT in the source table (needed to run the physics) ---
-# The source table gives TOTAL capacity (40MW, both cables) but Method B's
-# per-cable current calc needs a PER-CABLE peak load -- split evenly, an
+# ---- ASSUMED here, not in the source table (needed to run the physics) ---
+# The source table gives total capacity (40MW, both cables) but Method B's
+# per-cable current calc needs a per-cable peak load -- split evenly, an
 # assumption this script adds, not one carried from orkney_link_data.md.
 CAPACITY_MW_PER_CABLE = TOTAL_CAPACITY_MW / N_CABLES   # ASSUMED (this script, not the source table): equal 20/20 MW split between the two cables
 
 # ---- PLACEHOLDER, UNSOURCED (fault provision) ---------------------------
 # No source anywhere covers subsea fault frequency or repair cost for these
 # cables -- both numbers below are illustrative placeholders only, needed to
-# give the fault-provision line SOME value rather than silently omitting it.
+# give the fault-provision line some value rather than silently omitting it.
 FAULT_RATE_PER_KM_YR = 0.01         # PLACEHOLDER, UNSOURCED -- illustrative ~1 fault per 100 cable-km per year. Not sourced to any SHEPD/Ofgem RIIO-ED2 reliability report.
 COST_PER_FAULT_GBP = 750_000        # PLACEHOLDER, UNSOURCED -- illustrative subsea repair cost (specialist cable-repair vessel mobilisation, jointing, ROV survey). Real subsea repairs are reported anywhere from ~£0.5m to several £m depending on depth/weather/vessel availability -- this is a single illustrative point estimate, not a distribution.
 

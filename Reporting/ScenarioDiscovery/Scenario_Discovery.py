@@ -277,9 +277,9 @@ def save_trajectory(name, box):
 
 
 # box.box_lims[-1] is a DataFrame, index [min, max], one column per input
-# dimension. The categorical "scenario" column stores both rows as the SAME
+# dimension. The categorical "scenario" column stores both rows as the same
 # set of allowed categories, so .iloc[0] alone is enough to read it.
-# "Restricted" means this dimension's bounds are narrower than the FULL data
+# "Restricted" means this dimension's bounds are narrower than the full data
 # range it started at (box_lims of trajectory step 0).
 def box_bounds_dict(box):
     full = box.box_lims[0]
@@ -700,7 +700,7 @@ if __name__ == "__main__":
         boxes[name] = run_prim_for_strategy(name, value_col, df, X)
 
     # ---- regret RegressionPrim run (continuous outcome, alongside binary) ---
-    # Runs BEFORE any output is written (including the binary trajectory/box-
+    # Runs before any output is written (including the binary trajectory/box-
     # graph outputs below): if run_regret_prim_for_strategy's maximization
     # tripwire fires for any strategy, it raises and this script halts here --
     # nothing gets saved this run, since Plot 1/2 depend on both binary and

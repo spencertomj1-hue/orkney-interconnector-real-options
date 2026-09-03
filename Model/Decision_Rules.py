@@ -17,7 +17,7 @@ from Model.Options import (NewLink,
                      STAGED_LINK_STAGE_SIZES_DEFAULT, STAGED_LINK_STAGE1_YEAR_DEFAULT,
                      STAGED_LINK_FIXED_PER_STAGE, STAGED_LINK_BASE_PERMW, REBASE_2018_TO_2023)
 
-# Stage 1 is a DELIBERATE unconditional commitment at a fixed year, a genuinely different posture from Flexible's fully-optional Main Link; stages 2+ trigger on TOTAL GENERATION (background_gen_mw), also Ofgem's own approval-condition metric.
+# Stage 1 is a deliberate unconditional commitment at a fixed year, a genuinely different posture from Flexible's fully-optional Main Link; stages 2+ trigger on total generation (background_gen_mw), also Ofgem's own approval-condition metric.
 # Each stage's threshold = MAIN_LINK_BG_GEN_THRESHOLD scaled by that stage's cumulative share of 220MW, adjusted by STAGED_LINK_THETA (1.0 = exact proportional scaling; STAGED_LINK_THETA_SWEEP tests sensitivity around that anchor).
 STAGED_LINK_THETA = 1.0
 STAGED_LINK_THETA_SWEEP = [0.7, 0.85, STAGED_LINK_THETA, 1.15, 1.3]
@@ -33,8 +33,8 @@ MAIN_LINK_BG_GEN_THRESHOLD = 135           # background_gen_mw, trailing mean, "
 # CAVEAT (checked against DFES data): doesn't diverge meaningfully earlier than background_gen_mw alone -- kept as a toggle, not expected to move ENPV much on its own.
 GROWTH_INDEX_THRESHOLD = 1.0   # ILLUSTRATIVE calibration point: roughly where background_gen_mw=135MW (bg term=1.0) AND demand~=its 2019 base level (demand term~=1.0) both individually cross their own "1.0" -- not independently sourced, sanity-check before trusting.
 
-# Isolates background_gen_mw's DFES-only component; reuses MAIN_LINK_BG_GEN_THRESHOLD as a placeholder, UNCALIBRATED for this narrower signal (135MW was calibrated as a TOTAL-generation figure).
-# Sanity-check before trusting exact crossing years -- the cross-scenario SPREAD this produces is what's actually being tested, not the absolute level.
+# Isolates background_gen_mw's DFES-only component; reuses MAIN_LINK_BG_GEN_THRESHOLD as a placeholder, UNCALIBRATED for this narrower signal (135MW was calibrated as a total-generation figure).
+# Sanity-check before trusting exact crossing years -- the cross-scenario spread this produces is what's actually being tested, not the absolute level.
 DFES_BACKGROUND_THRESHOLD = MAIN_LINK_BG_GEN_THRESHOLD
 
 MAIN_LINK_OBSERVABLES = {
@@ -85,7 +85,7 @@ class Rule:
         self.prereq = prereq
         self.max_defer = max_defer
         self.cost_cap = cost_cap   # optional AND-gate: current capex estimate must be <= this
-        # Optional force-through ceiling on years blocked BY cost_cap specifically, distinct from max_defer, which only counts years the PHYSICAL condition was false.
+        # Optional force-through ceiling on years blocked by cost_cap specifically, distinct from max_defer, which only counts years the physical condition was false.
         # None (default): a cost_cap block can defer forever if the estimate never sharpens below it.
         self.cost_cap_max_defer = cost_cap_max_defer
         # Optional callable(state, t_idx, Year, build_year) -> bool, checked
@@ -147,7 +147,7 @@ class Rule:
             current_estimate = state["capex_estimate"][t_idx]
             if current_estimate > self.cost_cap:
                 if self.cost_cap_max_defer is not None:
-                    # Unlike max_defer above (which only counts years the PHYSICAL condition was false), this counts years the physical condition WAS true but cost_cap blocked anyway.
+                    # Unlike max_defer above (which only counts years the physical condition was false), this counts years the physical condition was true but cost_cap blocked anyway.
                     # So a persistently-expensive draw still forces a build eventually instead of deferring forever.
                     self._cost_defer_count += 1
                     if self._cost_defer_count < self.cost_cap_max_defer:
@@ -180,20 +180,20 @@ class Rule:
         return FiredDecision(asset, self.decision_year, self.build_year)
 
 
-# MAIN_LINK_BG_GEN_THRESHOLD is almost certainly a FORECAST justification, not a real-time gate -- a plain trailing-mean trigger implements the stricter reading, checked directly to leave Main Link firing at a mean build year of 2041.8 (69% of the horizon elapsed) vs the real project's 2028 target.
-# This trend-projected version instead fires when a linear-trend PROJECTION of the observable is on track to cross threshold within lookahead_years, rather than waiting for the trailing mean to have already crossed it.
+# MAIN_LINK_BG_GEN_THRESHOLD is almost certainly a forecast justification, not a real-time gate -- a plain trailing-mean trigger implements the stricter reading, checked directly to leave Main Link firing at a mean build year of 2041.8 (69% of the horizon elapsed) vs the real project's 2028 target.
+# This trend-projected version instead fires when a linear-trend projection of the observable is on track to cross threshold within lookahead_years, rather than waiting for the trailing mean to have already crossed it.
 TREND_WINDOW = 4               # trailing years for the trend fit -- longer than WINDOW(3), a slope estimate is noisier than a mean
 TREND_LOOKAHEAD_YEARS = 3      # fire if the trend-projected crossing is within this many years
 TREND_MIN_REAL_POINTS = 3      # minimum non-structural-zero points before fitting a trend at all
 
 
-# A mixin, not a Rule subclass, so the SAME trend logic combines with either Rule (-> TrendProjectedRule) or StagedLinkRule (-> TrendProjectedStagedLinkRule) without duplicating it.
+# A mixin, not a Rule subclass, so the same trend logic combines with either Rule (-> TrendProjectedRule) or StagedLinkRule (-> TrendProjectedStagedLinkRule) without duplicating it.
 # First in the MRO so _condition_from_window overrides the base class's trailing-mean one.
 class _TrendProjectionMixin:
     def _init_lookahead(self, lookahead_years=None, min_real_points=None):
         self.lookahead_years = TREND_LOOKAHEAD_YEARS if lookahead_years is None else lookahead_years
-        # How many REAL (non-structural-zero) points must exist before the rule will even attempt a trend fit.
-        # Raising this (paired with a wider window) makes the rule wait for MORE realised years before it can project a crossing -- an information-driven delay, not an artificial calendar floor like min_decision_year.
+        # How many real (non-structural-zero) points must exist before the rule will even attempt a trend fit.
+        # Raising this (paired with a wider window) makes the rule wait for more realised years before it can project a crossing -- an information-driven delay, not an artificial calendar floor like min_decision_year.
         self.min_real_points = TREND_MIN_REAL_POINTS if min_real_points is None else min_real_points
 
     def _condition_from_window(self, window_slice):
@@ -236,7 +236,7 @@ class TrendProjectedRule(_TrendProjectionMixin, Rule):
 
 
 # One stage of a rule-based staged interconnector build; subclasses Rule so Run_Strategy's isinstance sift still picks it up, but the eligibility/firing logic is a self-contained copy of Rule's, not an extension.
-# Two differences from Rule: prereq is a direct reference to the PREVIOUS stage's StagedLinkRule (every stage shares one class, so a type-name string can't tell stages apart), and asset_factory is called as asset_factory(build_year, state) so it can size this stage's capex from state['capex_estimate'] at its own build year.
+# Two differences from Rule: prereq is a direct reference to the previous stage's StagedLinkRule (every stage shares one class, so a type-name string can't tell stages apart), and asset_factory is called as asset_factory(build_year, state) so it can size this stage's capex from state['capex_estimate'] at its own build year.
 class StagedLinkRule(Rule):
     def __init__(self, name, window, threshold, prereq_rule, asset_factory,
                  lead, deadline, observable):
@@ -254,7 +254,7 @@ class StagedLinkRule(Rule):
         if self._prereq_rule is not None:
             if not self._prereq_rule.fired:
                 return False
-            # The FULL trailing window must sit after the prereq stage went live, not just the current year.
+            # The full trailing window must sit after the prereq stage went live, not just the current year.
             # So "M consecutive years" only counts years this stage's own prereq was actually active.
             if Year - self.window + 1 < self._prereq_rule.build_year:
                 return False
@@ -333,7 +333,7 @@ def make_main_link_rule(capex_mult=1.0, cost_cap=None,
                          min_decision_year=None, min_real_points=None,
                          cost_cap_max_defer=None, gate_mode="capex_screen", npv_margin=0.0):
     # Headline: fires when background_gen_mw is trend-projected to cross threshold within TREND_LOOKAHEAD_YEARS, anticipating the crossing rather than waiting for it (matching how the real 135MW condition was likely used, as a forecast justification, not a real-time gate); cost_cap=None reproduces this trigger exactly, a value adds an AND-gate on top of it.
-    # Fix A knobs (trend_window; min_decision_year, checked and found COUNTERPRODUCTIVE, kept only as a toggle; min_real_points, the one actually worth using) and Fix B knobs (cost_cap_max_defer; gate_mode="capex_screen"/"npv_proxy" via make_npv_gate; npv_margin) all default to unchanged behaviour.
+    # Fix A knobs (trend_window; min_decision_year, checked and found counterproductive, kept only as a toggle; min_real_points, the one actually worth using) and Fix B knobs (cost_cap_max_defer; gate_mode="capex_screen"/"npv_proxy" via make_npv_gate; npv_margin) all default to unchanged behaviour.
     if observable is None:
         observable = "background_gen_mw"
     if observable not in MAIN_LINK_OBSERVABLES:
@@ -423,7 +423,7 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
     total_mw = sum(stage_sizes)
     assert total_mw > 0 and all(mw > 0 for mw in stage_sizes), (
         f"stage_sizes must be a list of positive MW values, got {stage_sizes}")
-    # total_mw need NOT equal NewLink's 220MW -- it's whatever this strategy's own stage_sizes sum to.
+    # total_mw need not equal NewLink's 220MW -- it's whatever this strategy's own stage_sizes sum to.
     # The threshold scaling below uses total_mw itself, not a hardcoded 220, so "each stage's cumulative share of the total" stays correct regardless of what that total is.
 
     rules = []
@@ -435,8 +435,8 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
                                                learning_param=learning_param)
 
         def _asset_factory(build_year, state, _mw=mw, _vpermw=variable_permw):
-            # Realised capex multiplier for THIS stage = the noisy early
-            # estimate at ITS OWN build year -- reused, not redrawn; deferred
+            # Realised capex multiplier for this stage = the noisy early
+            # estimate at its own build year -- reused, not redrawn; deferred
             # stages inherit the sharpened, lower-variance estimate.
             stage_capex_mult = state["capex_estimate"][build_year - 2019]
             return StagedLinkStage(_mw, fixed_per_stage, _vpermw, stage_capex_mult)
@@ -467,7 +467,7 @@ def make_staged_link_strategy(stage_sizes=None, stage1_year=None, stage1_conditi
                     observable="delivered",
                 )
         else:
-            # Ofgem-style total-generation threshold: MAIN_LINK_BG_GEN_THRESHOLD scaled by this stage's cumulative share of THIS STRATEGY'S OWN total_mw (not a hardcoded 220), then adjusted by theta.
+            # Ofgem-style total-generation threshold: MAIN_LINK_BG_GEN_THRESHOLD scaled by this stage's cumulative share of this strategy's own total_mw (not a hardcoded 220), then adjusted by theta.
             # For the default 220MW stage_sizes this is identical to the original hardcoded behaviour; for a scaled variant the last stage still reaches exactly 135*theta once 100% of its own total is built.
             cum_mw_after = cum_mw_before + mw
             bg_threshold = MAIN_LINK_BG_GEN_THRESHOLD * (cum_mw_after / total_mw) * theta
