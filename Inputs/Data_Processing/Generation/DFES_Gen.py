@@ -1,9 +1,11 @@
 """Builds the DFES background-generation pipeline per scenario, MW, excluding
 non-export plant and the assets already modelled as Decisions elsewhere."""
 
+import os
 import pandas as pd
 
-PATH = "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Methodology_4/Coding/Inputs/Data/DFES/2025_DFES_Projections.csv"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))   # .../Coding
+PATH = os.path.join(REPO_ROOT, "Inputs", "Data", "DFES", "2025_DFES_Projections.csv")
 
 # Backup/standby plant doesn't run continuously or compete for link capacity
 # (including it manufactures curtailment); battery storage is absorption, not
@@ -59,4 +61,4 @@ out.index = out.index.astype(int)
 print("\n--- background capacity by technology, MW (Holistic Transition) ---")
 print(out["Holistic Transition"].round(1).to_string())
 
-out.to_csv("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Methodology_4/Coding/Inputs/Data/DFES/dfes_generation_MW.csv")
+out.to_csv(os.path.join(REPO_ROOT, "Inputs", "Data", "DFES", "dfes_generation_MW.csv"))

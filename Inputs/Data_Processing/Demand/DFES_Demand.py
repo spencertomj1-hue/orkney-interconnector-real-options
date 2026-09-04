@@ -3,9 +3,11 @@ counts to annual energy (GWh), relative to 2026. Output is a DELTA on the
 metered baseline, not total demand -- the 2026 stock is already contained in
 the ANM measured demand, so only increments are added."""
 
+import os
 import pandas as pd
 
-PATH = "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Methodology_4/Coding/Inputs/Data/DFES/2025_DFES_Projections.csv"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))   # .../Coding
+PATH = os.path.join(REPO_ROOT, "Inputs", "Data", "DFES", "2025_DFES_Projections.csv")
 
 # Car factor is derived, not assumed: miles/car/yr = Orkney car vehicle-miles
 # (DfT road traffic statistics, LA level, 2022-25 mean) / Orkney licensed cars
@@ -95,7 +97,7 @@ out.index = out.index.astype(int)
 
 print("\n--- demand increment relative to 2026 (GWh) ---")
 print(out.round(1))
-out.to_csv("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Methodology_4/Coding/Inputs/Data/Demand/dfes_demand_delta_GWh.csv")
+out.to_csv(os.path.join(REPO_ROOT, "Inputs", "Data", "Demand", "dfes_demand_delta_GWh.csv"))
 
 # --- split: how much is EV vs heating? ---------------------------------------
 print("\n--- 2040 split (GWh) ---")

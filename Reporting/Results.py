@@ -5,7 +5,8 @@
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -104,8 +105,7 @@ RUN_MC = True   # False skips every Monte Carlo section below for quick iteratio
 # -- so it needs to exist (run this file with RUN_MC=True at least once)
 # first. Scenario_Discovery.py does NOT use this pickle -- it reads its own
 # flat CSV, written by the SCENARIO_DISCOVERY-gated block further down.
-MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                  "Methodology_4/Coding/Extra/MC_Cache/headline_mc.pkl")
+MC_CACHE_PATH = os.path.join(REPO_ROOT, "Extra", "MC_Cache", "headline_mc.pkl")
 
 if RUN_MC:
     palette = CATEGORICAL[:5]   # fixed hue order -- see shared chart style above
@@ -513,8 +513,7 @@ if RUN_MC:
             _cols[_colname] = _vals
 
         _experiments = _pd.DataFrame(_cols)
-        _sd_dir = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                   "Methodology_4/Coding/Reporting/ScenarioDiscovery/Extra")
+        _sd_dir = _os.path.join(REPO_ROOT, "Reporting", "ScenarioDiscovery", "Extra")
         _os.makedirs(_sd_dir, exist_ok=True)
         _sd_csv_path = _os.path.join(_sd_dir, "mc_draws.csv")
         _experiments.to_csv(_sd_csv_path, index=False)
@@ -550,8 +549,7 @@ if RUN_MC:
     # elsewhere in this file are NOT reimplemented here: the point-metric
     # summary table (print_metrics_table above) and CDF/target curves (the
     # "Target curves" block above).
-    PNZ_OUT_DIR = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                   "Methodology_4/Coding/Extra/PNZ2025_Presentation")
+    PNZ_OUT_DIR = os.path.join(REPO_ROOT, "Extra", "PNZ2025_Presentation")
     PNZ_FIG_DIR = RESULTS_PLOTS_DIR   # plots -> Results_Plots/, tables stay under PNZ_OUT_DIR
     PNZ_TABLE_DIR = os.path.join(PNZ_OUT_DIR, "tables")
     os.makedirs(PNZ_TABLE_DIR, exist_ok=True)

@@ -4,11 +4,12 @@ Variants are fossil-fuel-price sensitivities: FFP_Low/Reference/FFP_High.
 Baseload is the standard reference against which wind capture rates are
 quoted, so CAPTURE converts it to what an Orkney wind farm actually earns."""
 
+import os
 import numpy as np
 import pandas as pd
 
-PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-        "Methodology_4/Coding/Inputs/Data/Energy_Prices.ods")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))   # .../Coding
+PATH = os.path.join(REPO_ROOT, "Inputs", "Data", "Energy_Prices.ods")
 
 CAPTURE = 0.85          # wind capture rate vs baseload (cannibalisation)
 SHEETS = {"Low": "FFP_Low", "Central": "Reference", "High": "FFP_High"}

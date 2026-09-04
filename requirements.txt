@@ -1,0 +1,11 @@
+numpy==2.3.1
+pandas==2.3.1
+matplotlib==3.10.5
+
+# Inputs/Data_Processing readers
+odfpy==1.4.1        # Prices.py: reads Energy_Prices.ods
+openpyxl==3.1.5      # REPD_Existing_Wind_Vintages.py: reads REPD_publication_Q1_2026.xlsx
+requests==2.32.4     # GettingWindData.py: Renewables.ninja API
+
+# Reporting/ScenarioDiscovery/ (PRIM scenario discovery only)
+ema_workbench==3.0.0

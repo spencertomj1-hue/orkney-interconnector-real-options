@@ -1,5 +1,8 @@
+import os
 import numpy as np
 import pandas as pd
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 BASE_YEAR  = 2019
 LEVEL_2019 = 141.95     # GWh, measured
@@ -12,7 +15,7 @@ base = LEVEL_2019 + TREND * (Years - BASE_YEAR)
 
 # DFES increments, zero before 2026
 delta = pd.read_csv(
-    "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Methodology_4/Coding/Inputs/Data/Demand/dfes_demand_delta_GWh.csv",
+    os.path.join(REPO_ROOT, "Inputs", "Data", "Demand", "dfes_demand_delta_GWh.csv"),
     index_col="year",
 ).reindex(Years).fillna(0.0)
 

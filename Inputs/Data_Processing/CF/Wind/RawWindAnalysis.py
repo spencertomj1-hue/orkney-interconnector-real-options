@@ -1,7 +1,7 @@
 import numpy as np, pandas as pd, glob, os
 
-MIDAS = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-         "Methodology_4/Coding/Inputs/Data/Generation/RawWindData/")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))   # .../Coding
+MIDAS = os.path.join(REPO_ROOT, "Inputs", "Data", "Generation", "RawWindData") + os.sep
 Z0, Z_REF, Z_HUB = 0.03, 10.0, 80.0
 
 def load_midas(path):

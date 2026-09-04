@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-PATH = Path("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-            "Methodology_4/Coding/Inputs/Data/CF/Ninja_PV_CF.csv")
+REPO_ROOT = Path(__file__).resolve().parents[3]      # .../Coding
+PATH = REPO_ROOT / "Inputs" / "Data" / "CF" / "Ninja_PV_CF.csv"
 
 MEASURED_CF = 0.100   # 2019 Orkney PV, regional renewable statistics
 

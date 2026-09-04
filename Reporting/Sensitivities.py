@@ -10,7 +10,8 @@
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,8 +29,7 @@ from Reporting._shared import check_cache_provenance, paths_from_stored_z, do_no
 SENSITIVITIES_PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Sensitivities_Plots")
 os.makedirs(SENSITIVITIES_PLOTS_DIR, exist_ok=True)
 
-MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                  "Methodology_4/Coding/Extra/MC_Cache/headline_mc.pkl")
+MC_CACHE_PATH = os.path.join(REPO_ROOT, "Extra", "MC_Cache", "headline_mc.pkl")
 with open(MC_CACHE_PATH, "rb") as _f:
     _CACHE = pickle.load(_f)
 

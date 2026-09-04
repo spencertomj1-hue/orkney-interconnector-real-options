@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-PATH = Path("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-            "Methodology_4/Coding/Inputs/Data/DFES/dfes_generation_MW.csv")
+REPO_ROOT = Path(__file__).resolve().parents[3]      # .../Coding
+PATH = REPO_ROOT / "Inputs" / "Data" / "DFES" / "dfes_generation_MW.csv"
 
 # DFES technology -> profile key in System_Model.PROFILES
 TECH_MAP = {

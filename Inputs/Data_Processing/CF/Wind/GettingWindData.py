@@ -1,8 +1,8 @@
 import io, os, time, calendar, requests, pandas as pd
 
 TOKEN = os.environ["RENINJA_TOKEN"]   # get a free token at https://www.renewables.ninja/register
-OUT   = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-         "Methodology_4/Coding/Inputs/Data/Generation/ninja/")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))   # .../Coding
+OUT   = os.path.join(REPO_ROOT, "Inputs", "Data", "Generation", "ninja") + os.sep
 LAT, LON = 58.9830, -2.9600
 
 os.makedirs(OUT, exist_ok=True)

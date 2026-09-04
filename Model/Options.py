@@ -6,9 +6,11 @@
 
 import csv
 import math
+import os
 
-def _cpi(year, path="/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                     "Methodology_4/Coding/Inputs/Data/cpi_index.csv"):
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+def _cpi(year, path=os.path.join(REPO_ROOT, "Inputs", "Data", "cpi_index.csv")):
     with open(path, newline="") as f:
         return next(float(r["cpi_index"]) for r in csv.DictReader(f) if int(r["year"]) == year)
 

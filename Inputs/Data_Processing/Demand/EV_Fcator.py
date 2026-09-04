@@ -7,7 +7,8 @@ assumption, real-world BEV consumption)."""
 import pandas as pd
 from pathlib import Path
 
-EXTRA = Path("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Methodology_4/Coding/Inputs/Data/Demand")
+REPO_ROOT = Path(__file__).resolve().parents[3]      # .../Coding
+EXTRA = REPO_ROOT / "Inputs" / "Data" / "Demand"
 TRAFFIC = EXTRA / "Traffic_Volume.csv"
 
 # --- inputs to set -----------------------------------------------------------

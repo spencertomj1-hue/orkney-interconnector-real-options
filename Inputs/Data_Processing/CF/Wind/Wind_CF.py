@@ -6,10 +6,8 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-PATH = Path(
-    "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-    "Methodology_4/Coding/Inputs/Data/CF/Ninja_Wind_CF.csv"
-)
+REPO_ROOT = Path(__file__).resolve().parents[4]      # .../Coding
+PATH = REPO_ROOT / "Inputs" / "Data" / "CF" / "Ninja_Wind_CF.csv"
 
 
 def _find_header_row(path, max_scan=10):

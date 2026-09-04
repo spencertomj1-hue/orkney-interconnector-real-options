@@ -14,15 +14,15 @@ import pandas as pd
 # Lives in Reporting/ScenarioDiscovery/ -- put Coding/ (2 levels up) back on
 # sys.path so the package-qualified imports below resolve regardless of
 # invocation cwd.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, REPO_ROOT)
 
 import Model.System_Model as M
 from Model.System_Model import Run_Strategy, Strategies_2, Strategies_Flex
 from Model.Decision_Rules import MAIN_LINK_BG_GEN_THRESHOLD as _BG_THRESH
 from Reporting._shared import check_cache_provenance, paths_from_stored_z, do_nothing, lcoe_from_stores
 
-MC_CACHE_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                  "Methodology_4/Coding/Extra/MC_Cache/headline_mc.pkl")
+MC_CACHE_PATH = os.path.join(REPO_ROOT, "Extra", "MC_Cache", "headline_mc.pkl")
 with open(MC_CACHE_PATH, "rb") as _f:
     _CACHE = pickle.load(_f)
 
@@ -109,9 +109,8 @@ for _sname, _vals in _marg_lcoe.items():
     _cols[_colname] = _vals
 
 _experiments = pd.DataFrame(_cols)
-_sd_dir = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-           "Methodology_4/Coding/Reporting/ScenarioDiscovery/Extra")
-_sd_csv_path = _sd_dir + "/mc_draws.csv"
+_sd_dir = os.path.join(REPO_ROOT, "Reporting", "ScenarioDiscovery", "Extra")
+_sd_csv_path = os.path.join(_sd_dir, "mc_draws.csv")
 _experiments.to_csv(_sd_csv_path, index=False)
 print(f"scenario discovery experiments table written to {_sd_csv_path}, "
       f"{len(_experiments)} rows x {len(_experiments.columns)} columns")

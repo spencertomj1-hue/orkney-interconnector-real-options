@@ -2,12 +2,17 @@
 the-start: MW x dt integration, never mean-of-means. Valid day: span >= 23h
 AND max gap <= 20 min."""
 
+import os
 import pandas as pd
 import numpy as np
 
-PATH = "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Forecasting - Week 1/Data/Generation.csv"
-OUT_DAILY = "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Forecasting - Week 1/Data/generation_daily_clean.csv"
-OUT_ANNUAL = "/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/Forecasting - Week 1/Data/generation_annual_clean.csv"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))   # .../Coding
+PROJECT_ROOT = os.path.abspath(os.path.join(REPO_ROOT, "..", ".."))                       # .../Strategic_Engineering_Project
+_FORECASTING_DATA = os.path.join(PROJECT_ROOT, "Forecasting - Week 1", "Data")
+
+PATH = os.path.join(_FORECASTING_DATA, "Generation.csv")
+OUT_DAILY = os.path.join(_FORECASTING_DATA, "generation_daily_clean.csv")
+OUT_ANNUAL = os.path.join(_FORECASTING_DATA, "generation_annual_clean.csv")
 
 MIN_SPAN_HOURS = 23
 MAX_GAP_MIN = 20

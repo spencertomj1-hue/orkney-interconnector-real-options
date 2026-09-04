@@ -5,7 +5,9 @@
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))   # .../Coding
+PROJECT_ROOT = os.path.abspath(os.path.join(REPO_ROOT, "..", ".."))                       # .../Strategic_Engineering_Project
+sys.path.insert(0, REPO_ROOT)
 
 import csv
 import numpy as np
@@ -14,8 +16,7 @@ from Inputs.Data_Processing.Generation.Prices import PRICES as _HIST_PRICE_TABLE
 # Same raw source as System_Model.py's dem_shape_*.npy hourly shapes (see
 # Hourly_For_CF.py), just the annual totals rather than the hourly shape
 # normalised to sum to 1.
-DEMAND_ANNUAL_CSV = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                      "Forecasting - Week 1/Data/demand_annual_clean.csv")
+DEMAND_ANNUAL_CSV = os.path.join(PROJECT_ROOT, "Forecasting - Week 1", "Data", "demand_annual_clean.csv")
 
 
 # {year: backfilled annual demand, GWh} for status=='complete' years.
@@ -86,8 +87,7 @@ PRICE_GBM_SIGMA_ESTIMATED_EXCL_CRISIS = estimate_price_gbm_sigma(exclude_years=P
 # pipeline. This is the closest measured Orkney generation series available,
 # the same role PRICE_GBM_SIGMA's UK-wholesale proxy plays for a local price
 # series that doesn't exist.
-GENERATION_ANNUAL_CSV = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                          "Forecasting - Week 1/Data/generation_annual_clean.csv")
+GENERATION_ANNUAL_CSV = os.path.join(PROJECT_ROOT, "Forecasting - Week 1", "Data", "generation_annual_clean.csv")
 
 # generation_annual_clean.csv's own status flag is far stricter than
 # demand's (coverage >= ~0.92, keeping only 3 of 10 years: 2012/2020/2021 --

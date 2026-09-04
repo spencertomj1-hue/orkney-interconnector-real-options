@@ -7,7 +7,8 @@
 import csv
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 from Model.Options import REBASE_2018_TO_2023
@@ -98,8 +99,7 @@ PRICE_BASE_YEAR = 2023
 
 # ONS CPI annual index (2015=100), 2012-2025, from commonly-cited ONS rates (not a live ONS query) -- verify against published series D7BT/L522 before submission.
 # Beyond 2025, extended flat at CPI_FLAT_ASSUMPTION_RATE.
-CPI_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-            "Methodology_4/Coding/Inputs/Data/cpi_index.csv")
+CPI_PATH = os.path.join(REPO_ROOT, "Inputs", "Data", "cpi_index.csv")
 CPI_FLAT_ASSUMPTION_RATE = 0.02   # assumed CPI growth beyond the CSV's last historical year
 
 def _load_cpi_by_year():

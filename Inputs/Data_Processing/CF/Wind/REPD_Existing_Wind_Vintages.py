@@ -4,12 +4,12 @@ site, groups by commission year, and writes the result to
 orkney_existing_wind_vintages.csv -- Model_Components.py reads that CSV
 rather than parsing the 14k-row REPD workbook at import time. Re-run to
 regenerate the CSV if REPD updates."""
+import os
 import pandas as pd
 
-PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-        "Methodology_4/Coding/Inputs/Data/Generation/REPD_publication_Q1_2026.xlsx")
-OUT_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-            "Methodology_4/Coding/Inputs/Data/Generation/orkney_existing_wind_vintages.csv")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))   # .../Coding
+PATH = os.path.join(REPO_ROOT, "Inputs", "Data", "Generation", "REPD_publication_Q1_2026.xlsx")
+OUT_PATH = os.path.join(REPO_ROOT, "Inputs", "Data", "Generation", "orkney_existing_wind_vintages.csv")
 
 df = pd.read_excel(PATH, sheet_name="REPD")
 

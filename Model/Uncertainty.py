@@ -7,7 +7,8 @@
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, REPO_ROOT)
 
 import numpy as np
 from Inputs.Data_Processing.Generation.GBM_Calibration import (DEMAND_GBM_SIGMA_ESTIMATED, PRICE_GBM_SIGMA_ESTIMATED, PRICE_GBM_SIGMA_ESTIMATED_EXCL_CRISIS, BACKGROUND_GBM_SIGMA_ESTIMATED)
@@ -27,8 +28,7 @@ WEATHER_YEARS = [2012, 2013, 2014, 2016, 2017]
 def compute_wind_cf_by_year(avail):
     out = {}
     for _yr in WEATHER_YEARS:
-        _path = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                 f"Methodology_4/Coding/Inputs/Data/Generation/ninja/wind_cf_corrected_{_yr}.npy")
+        _path = os.path.join(REPO_ROOT, "Inputs", "Data", "Generation", "ninja", f"wind_cf_corrected_{_yr}.npy")
         _raw_cf = np.load(_path)
         if len(_raw_cf) != 8760:
             raise ValueError(f"wind_cf_corrected_{_yr}.npy has length {len(_raw_cf)}, expected 8760")
@@ -41,8 +41,7 @@ WIND_CF_BY_YEAR = compute_wind_cf_by_year(AVAIL)
 # ANM (SSEN Active Network Management) minute demand data, per year -- same years as WIND_CF_BY_YEAR, so wind and demand always match a real year.
 DEM_SHAPE_BY_YEAR = {}
 for _yr in WEATHER_YEARS:
-    _path = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-             f"Methodology_4/Coding/Inputs/Data/Demand/dem_shape/dem_shape_{_yr}.npy")
+    _path = os.path.join(REPO_ROOT, "Inputs", "Data", "Demand", "dem_shape", f"dem_shape_{_yr}.npy")
     _shape = np.load(_path)
     if len(_shape) != 8760:
         raise ValueError(f"dem_shape_{_yr}.npy has length {len(_shape)}, expected 8760")

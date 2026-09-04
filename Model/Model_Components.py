@@ -1,14 +1,14 @@
 import csv
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, REPO_ROOT)
 
 from Extra.orkney_link_opex import method_a_fixed_opex, method_b_total, ANNUAL_THROUGHPUT_GWH_BASE
 
 LIFETIMES = {"Link": 40, "Generation": 25}   # years
 
-REPD_WIND_VINTAGES_PATH = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-                            "Methodology_4/Coding/Inputs/Data/Generation/orkney_existing_wind_vintages.csv")
+REPD_WIND_VINTAGES_PATH = os.path.join(REPO_ROOT, "Inputs", "Data", "Generation", "orkney_existing_wind_vintages.csv")
 
 # No published SHEPD/Ofgem OpEx actual exists for these specific cables, so this is an estimate: Method B (conductor losses + Method A's %-of-capex fixed-O&M proxy + an annualised fault-repair provision), at the sourced 2017 base throughput and the £70/MWh midpoint of the assumed £60-80/MWh loss-price range.
 # Computed live from orkney_link_opex.py rather than pasted as a literal, so it can't drift out of sync with its own derivation.

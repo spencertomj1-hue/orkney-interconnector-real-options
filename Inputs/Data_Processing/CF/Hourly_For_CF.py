@@ -7,10 +7,11 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-CSV = Path("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-           "Forecasting - Week 1/Data/Demand.csv")
-OUT = Path("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-           "Methodology_4/Coding/Inputs/Data/Demand/dem_shape")
+REPO_ROOT = Path(__file__).resolve().parents[3]      # .../Coding
+PROJECT_ROOT = REPO_ROOT.parent.parent                # .../Strategic_Engineering_Project
+
+CSV = PROJECT_ROOT / "Forecasting - Week 1" / "Data" / "Demand.csv"
+OUT = REPO_ROOT / "Inputs" / "Data" / "Demand" / "dem_shape"
 OUT.mkdir(exist_ok=True)
 
 YEARS = [2012, 2013, 2014, 2016, 2017]   # 2015 (no Nov-Dec) and 2018 (~1 month total) dropped, near-total gaps

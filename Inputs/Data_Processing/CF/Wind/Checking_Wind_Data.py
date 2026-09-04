@@ -1,7 +1,7 @@
 import numpy as np, glob, os, hashlib
 
-OUT = ("/Users/tomspencer/Desktop/Code/Strategic_Engineering_Project/"
-       "Methodology_4/Coding/Inputs/Data/Generation/ninja/")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))   # .../Coding
+OUT = os.path.join(REPO_ROOT, "Inputs", "Data", "Generation", "ninja") + os.sep
 AVAIL = 0.90
 
 files = sorted(glob.glob(OUT + "wind_cf_*.npy"))
